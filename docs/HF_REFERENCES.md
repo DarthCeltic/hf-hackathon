@@ -28,8 +28,3 @@ For new models or updates to existing models:
 2. Pin the exact revision and filename(s).
 3. Record the upstream model license.
 4. Document any export, quantization, packing, preprocessing, or shape changes.
-5. Do not commit generated model blobs unless maintainers explicitly approve a
-   small first-party fixture.
-
-Maintainers may accept an exception only when no usable Hugging Face reference
-exists for the model family.

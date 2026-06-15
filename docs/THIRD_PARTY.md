@@ -1,12 +1,11 @@
 # Third-Party Components
 
-The first-party code in this repository is licensed under **Apache-2.0** (see
-[`LICENSE`](../LICENSE) and [`NOTICE`](../NOTICE)). The vendored Esperanto
-sys-emu firmware under `.github/ci/firmware/esperanto-fw/` is also owned by us
-and distributed under Apache-2.0. The components below are **not** covered by
-that license; each retains its own upstream license and copyright. This file is
-the top-level inventory; per-port `THIRD_PARTY.md` files hold the detailed
-records.
+The first-party contents in this repository are licensed under **Apache-2.0**
+(see [`LICENSE`](../LICENSE) and [`NOTICE`](../NOTICE)). This includes the
+vendored Esperanto sys-emu firmware under
+`.github/ci/firmware/esperanto-fw/`. The components below are external
+components and retain their own upstream terms. This file is the top-level
+inventory; per-port `THIRD_PARTY.md` files hold the detailed records.
 
 | Component | Path | Type | License | Notes |
 |-----------|------|------|---------|-------|
@@ -16,11 +15,11 @@ records.
 
 ## How licensing is structured here
 
-- `LICENSE` (Apache-2.0) applies to this repository's **own** code: the CI
+- `LICENSE` (Apache-2.0) applies to this repository's **own** contents: the CI
   scripts, configs, docs, porting harness, and vendored Esperanto sys-emu
   firmware.
 - `NOTICE` carries the Apache attribution required for redistribution.
-- Bundled third-party source/binaries keep their upstream license; do not assume
+- Bundled third-party source/binaries keep their upstream terms; do not assume
   Apache-2.0 covers anything listed above.
 - Each `ported_models/<port>/THIRD_PARTY.md` records the upstream URL, pinned
   revision, vendoring date, and license status for that port.

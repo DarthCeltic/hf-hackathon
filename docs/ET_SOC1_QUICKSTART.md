@@ -54,17 +54,6 @@ export REMOTE_MODELS="$REMOTE_ROOT/ported_models"
 Do not use placeholder values literally. Set `BOARD_HOST` to the host you were
 given by your lab or cluster.
 
-## Host Dependencies
-
-Ubuntu/Debian:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-  build-essential git cmake ninja-build curl jq xz-utils rsync openssh-client \
-  python3 python3-pip python3-venv
-```
-
 ## Clone Source Repos
 
 Clone the model-port repo and AIFoundry platform repo:
@@ -211,30 +200,6 @@ ssh "$BOARD_SSH" "
 "
 ```
 
-Every board launch should use a lock so two runs do not collide:
-
-```bash
-flock -x -w 600 /var/lock/etsoc-shire0.lock ...
-```
-
-If your site uses a different lock path, set one with:
-
-```bash
-export BOARD_LOCK="${BOARD_LOCK:-/var/lock/etsoc-shire0.lock}"
-```
-
-## Stage Common Inputs
-
-```bash
-cd "$MODEL_PORT_REPO"
-
-rsync -aq \
-  "$ARTIFACT_ROOT/erbium_amp_probe/dncnn3-bench/zero2m.bin" \
-  "$ARTIFACT_ROOT/erbium_amp_probe/dncnn3-bench/dncnn3_input.bin" \
-  "$ARTIFACT_ROOT/erbium_amp_probe/dncnn3-bench/dncnn3_weights.bin" \
-  "$BOARD_SSH:$REMOTE_MODELS/"
-```
-
 ## Stage A Smoke Suite
 
 YOLO example:
@@ -268,11 +233,9 @@ YOLO:
 ssh "$BOARD_SSH" "
 set -euo pipefail
 export LD_LIBRARY_PATH='$REMOTE_ROOT:$REMOTE_MODELS:'\"\${LD_LIBRARY_PATH:-}\"
-LOCK='${BOARD_LOCK:-/var/lock/etsoc-shire0.lock}'
 cd '$REMOTE_MODELS/yolo-bench'
 STAMP=\$(date +%Y%m%d-%H%M%S)
-flock -x -w 600 \"\$LOCK\" \
-  '$REMOTE_MODELS/erbium_soc1sim_argbuf' \
+'$REMOTE_MODELS/erbium_soc1sim_argbuf' \
     --elf-load ./y10_00_base.elf \
     --shire 0 \
     --file_load 0x0,../zero2m.bin \
@@ -288,11 +251,9 @@ DnCNN, with input and weights:
 ssh "$BOARD_SSH" "
 set -euo pipefail
 export LD_LIBRARY_PATH='$REMOTE_ROOT:$REMOTE_MODELS:'\"\${LD_LIBRARY_PATH:-}\"
-LOCK='${BOARD_LOCK:-/var/lock/etsoc-shire0.lock}'
 cd '$REMOTE_MODELS/dncnn3-pmc'
 STAMP=\$(date +%Y%m%d-%H%M%S)
-flock -x -w 600 \"\$LOCK\" \
-  '$REMOTE_MODELS/erbium_soc1sim_argbuf' \
+'$REMOTE_MODELS/erbium_soc1sim_argbuf' \
     --elf-load ./v3x_01_oc2_base.elf \
     --shire 0 \
     --file_load 0x0,../zero2m.bin \
@@ -326,14 +287,12 @@ For a staged suite, run each variant from its manifest:
 ssh "$BOARD_SSH" "
 set -euo pipefail
 export LD_LIBRARY_PATH='$REMOTE_ROOT:$REMOTE_MODELS:'\"\${LD_LIBRARY_PATH:-}\"
-LOCK='${BOARD_LOCK:-/var/lock/etsoc-shire0.lock}'
 cd '$REMOTE_MODELS/yolo-bench'
 STAMP=\$(date +%Y%m%d-%H%M%S)
 while read -r variant; do
   [ -n \"\$variant\" ] || continue
   echo \"=== \$variant ===\"
-  flock -x -w 600 \"\$LOCK\" \
-    '$REMOTE_MODELS/erbium_soc1sim_argbuf' \
+  '$REMOTE_MODELS/erbium_soc1sim_argbuf' \
       --elf-load ./\"\$variant\".elf \
       --shire 0 \
       --file_load 0x0,../zero2m.bin \
@@ -390,27 +349,6 @@ OBJCOPY="$ET_INSTALL/bin/riscv64-unknown-elf-objcopy"
   weights.bin "$BUILD_ROOT/weights.o"
 ```
 
-## Reading Performance
-
-There are two measurements:
-
-- Whole-kernel launcher time: `Kernel wait seconds`.
-- Kernel-written PMC/per-layer ledger in `dump.bin`, if that kernel has PMC
-  instrumentation.
-
-Launcher timing:
-
-```bash
-grep 'Kernel wait seconds' run_*.log
-```
-
-PMC parsing is model-specific. Look for parser scripts next to each port,
-for example:
-
-```bash
-find "$ARTIFACT_ROOT" -path '*tools*' -name '*pmc*.py' -o -name '*parse*.py'
-```
-
 ## Common Failure Modes
 
 - SSH fails: fix `BOARD_HOST`, `BOARD_USER`, or keys.
@@ -425,14 +363,3 @@ find "$ARTIFACT_ROOT" -path '*tools*' -name '*pmc*.py' -o -name '*parse*.py'
   L1D is not coherent across minions.
 - `tensor_load` reads wrong data: check 64-byte alignment. It rounds
   addresses.
-
-## What To Avoid
-
-- Do not bake personal workstation paths into build or run docs.
-- Do not bake lab-specific board hostnames into shared scripts.
-- Do not run without a board-side lock.
-- Do not reboot, reset, power-cycle, or bus-reset the board as part of this
-  workflow.
-- Do not rely on sys-emu wall time as a board performance estimate.
-- Do not ask a model to write a full model kernel end-to-end. Map one ONNX
-  op or block at a time, compare against host ORT, then measure the kernel.

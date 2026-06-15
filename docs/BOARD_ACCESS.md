@@ -24,14 +24,3 @@ Timezone:
 
 After access is approved, follow [`ET_SOC1_QUICKSTART.md`](ET_SOC1_QUICKSTART.md)
 to set up your local toolchain and run your first board test.
-
-## Security
-
-You do not need to put personal Tailscale credentials in a PR. Repository CI
-uses the configured board runners; Tailscale access is for interactive testing
-and debugging.
-
-Do not post private keys, Tailscale auth keys, SSH keys, or personal tokens in
-Discord, GitHub, Hugging Face, or this repository. If a maintainer needs to
-verify access, they will ask you to confirm connectivity without sharing
-secrets.
