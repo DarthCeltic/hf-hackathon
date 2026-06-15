@@ -1,0 +1,11 @@
+hf-hackathon — ET-SoC1 model porting and benchmarking
+Copyright 2026 nekkoai
+
+This product is licensed under the Apache License, Version 2.0 (the "License");
+see the LICENSE file. You may not use the first-party files in this repository
+except in compliance with the License.
+
+This repository also bundles or references third-party components that are NOT
+covered by the Apache-2.0 license above and that retain their own licenses and
+copyright. See THIRD_PARTY.md for the authoritative inventory and the
+per-component THIRD_PARTY.md files under ported_models/.

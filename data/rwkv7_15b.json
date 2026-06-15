@@ -1,0 +1,26 @@
+{
+  "model": "rwkv7_15b",
+  "metric": "tokens_per_second",
+  "lower_is_better": false,
+  "updated_at": "2026-05-27T10:10:50.413282+00:00",
+  "entries": [
+    {
+      "team": "AFOliveira",
+      "variant": "rwkv7-1.5B-world-q8_0",
+      "kernel_wait_s": null,
+      "tokens_per_second": 3.651573824514643,
+      "prompt_tokens_per_second": 20.530359571132866,
+      "prompt_tokens": 17,
+      "completion_tokens": 96,
+      "total_tokens": 113,
+      "perplexity": 16.4576,
+      "perplexity_error": 3.00688,
+      "perplexity_tokens": 512,
+      "perplexity_prompt_tokens_per_second": 82.28,
+      "sha": "1bb9a0c14cd1a9bc794a803f8e1045b3e64adfac",
+      "ref": "refs/heads/main",
+      "run_url": "https://github.com/nekkoai/hf-hackathon/actions/runs/26504752353",
+      "scored_at": "2026-05-27T10:09:56.154384+00:00"
+    }
+  ]
+}

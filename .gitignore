@@ -1,0 +1,29 @@
+# Generated model-port artifacts
+*.elf
+!.github/ci/firmware/**/*.elf
+*.bin
+*.dump
+*.onnx
+*.dlc
+*.npz
+*.npy
+*.pt
+*.pth
+*.tgz
+*.tar.gz
+*.tar.xz
+local-artifacts/
+.ci-work/
+run_*/
+runs/
+build/
+__pycache__/
+
+# Local platform config and run logs
+.github/ci/platform/deploy/config.local.env
+.github/ci/platform/deploy/config.env
+*_uart*_tx.log
+sysemu.log
+
+# Draft / WIP content not part of the published repo
+blogpost/
