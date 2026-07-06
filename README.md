@@ -22,13 +22,13 @@ Results are from real ET-SoC1 silicon via the main-branch board workflow. Each m
 
 | Model | Best participant | Variant | Metric | Score | PPL | Run |
 |-------|------------------|---------|--------|-------|-----|-----|
-| dncnn | AFOliveira | `v3x_01_oc2_base` | Kernel wait | 0.039880s | - | [f919b2a](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28774650725) |
-| yolo | AFOliveira | `y10_00_base` | Kernel wait | 0.133751s | - | [f919b2a](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28774650725) |
-| whisper | AFOliveira | `w10_00_base` | Kernel wait | 0.041202s | - | [f919b2a](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28774650725) |
-| lfm25 | AFOliveira | `LFM2.5-1.2B-Instruct-Q8_0` | Decode tokens/s | 3.13 | 21.70 (+/- 4.45) | [f919b2a](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28774650725) |
-| llama32_1b | AFOliveira | `Llama-3.2-1B-Instruct-Q8_0` | Decode tokens/s | 13.49 | 15.31 (+/- 2.89) | [f919b2a](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28774650725) |
-| gemma3n_e2b | AFOliveira | `gemma-3n-E2B-it-Q8_0` | Decode tokens/s | 1.49 | 32.83 (+/- 10.20) | [f919b2a](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28774650725) |
-| tinyllama11b | AFOliveira | `TinyLlama-1.1B-Chat-v1.0-Q8_0` | Decode tokens/s | 11.28 | 29.23 (+/- 7.70) | [f919b2a](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28774650725) |
+| dncnn | AFOliveira | `v3x_01_oc2_base` | Kernel wait | 0.039965s | - | [4084cf8](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28776155529) |
+| yolo | AFOliveira | `y10_00_base` | Kernel wait | 0.133753s | - | [4084cf8](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28776155529) |
+| whisper | AFOliveira | `w10_00_base` | Kernel wait | 0.041213s | - | [4084cf8](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28776155529) |
+| lfm25 | AFOliveira | `LFM2.5-1.2B-Instruct-Q8_0` | Decode tokens/s | 3.13 | 21.70 (+/- 4.45) | [4084cf8](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28776155529) |
+| llama32_1b | AFOliveira | `Llama-3.2-1B-Instruct-Q8_0` | Decode tokens/s | 13.47 | 15.31 (+/- 2.89) | [4084cf8](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28776155529) |
+| gemma3n_e2b | AFOliveira | `gemma-3n-E2B-it-Q8_0` | Decode tokens/s | 1.50 | 32.83 (+/- 10.20) | [4084cf8](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28776155529) |
+| tinyllama11b | AFOliveira | `TinyLlama-1.1B-Chat-v1.0-Q8_0` | Decode tokens/s | 11.30 | 29.23 (+/- 7.70) | [4084cf8](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28776155529) |
 | rwkv7_15b | AFOliveira | `rwkv7-1.5B-world-q8_0` | Decode tokens/s | 3.65 | 16.46 (+/- 3.01) | [1bb9a0c](https://github.com/nekkoai/hf-hackathon/actions/runs/26504752353) |
 
 Full JSON data lives in [`data/`](data/).
