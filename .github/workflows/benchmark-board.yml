@@ -186,8 +186,12 @@ jobs:
         env:
           INPUT_REF: ${{ github.event.inputs.ref || '' }}
         run: |
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "ref=${INPUT_REF:-$GITHUB_REF}" >> "$GITHUB_OUTPUT"
+          sha="$(git rev-parse HEAD)"
+          ref="${INPUT_REF:-$GITHUB_REF}"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "BENCHMARK_SHA=$sha" >> "$GITHUB_ENV"
+          echo "BENCHMARK_REF=$ref" >> "$GITHUB_ENV"
           if [[ "$INPUT_REF" =~ ^refs/pull/([0-9]+)/merge$ ]]; then
             echo "pr=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
           fi

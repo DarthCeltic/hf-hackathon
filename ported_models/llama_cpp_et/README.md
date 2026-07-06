@@ -24,8 +24,9 @@ CI runs `actions/checkout@v4` with `submodules: recursive`, so the submodule is
 present on the runner without any extra step.
 
 Each benchmark under `benchmarks/` selects one GGUF artifact, runs
-`llama-server` on the `ET` device, records decode tokens/second, and runs
-`llama-perplexity` on WikiText-2 raw.
+`llama-server` on the `ET` device to validate the answer path, runs
+`llama-perplexity` on WikiText-2 raw, and scores throughput with
+`llama-bench` token-generation tokens/second.
 
 The default main-branch board run only executes the canonical smoke set. Extra
 ET-supported candidates can be run explicitly, for example:

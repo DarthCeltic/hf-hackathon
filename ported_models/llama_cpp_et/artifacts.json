@@ -50,6 +50,13 @@
       "relative_to": "llama_cpp_build",
       "relative_path": "bin/llama-perplexity"
     },
+    "llama_bench": {
+      "kind": "framework_binary",
+      "framework": "llama.cpp-et",
+      "env": "LLAMA_CPP_ET_BENCH",
+      "relative_to": "llama_cpp_build",
+      "relative_path": "bin/llama-bench"
+    },
     "wikitext2_raw_test": {
       "kind": "validation_dataset",
       "dataset": "wikitext-2-raw-v1",

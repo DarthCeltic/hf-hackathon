@@ -9,8 +9,8 @@
   "artifacts_file": "../artifacts.json",
   "canonical_variant": "LFM2.5-1.2B-Instruct-Q8_0",
   "score": {
-    "metric": "tokens_per_second",
-    "label": "Decode tokens/s",
+    "metric": "llama_bench_tokens_per_second",
+    "label": "llama-bench tg tokens/s",
     "higher_is_better": true
   },
   "note": "The current ET backend cannot full-offload LFM2 recurrent state: -ngl >= 2 aborts on cache_r_* CPY/SCALE placement. Keep this as a partial ET smoke until that backend support lands.",

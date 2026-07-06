@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a board-resident llama-server benchmark and write a leaderboard score."""
+"""Run board-resident llama.cpp validation and write a leaderboard score."""
 
 from __future__ import annotations
 
@@ -221,10 +221,25 @@ def artifact_has_env_override(mcfg: dict[str, Any], artifact_id: str, fallback_e
     return any(os.environ.get(name) for name in artifact_env_names(artifact, fallback_env))
 
 
-def ensure_llama_cpp_build(mcfg: dict[str, Any], lcfg: dict[str, Any], server_bin: Path, ppl_bin: Path | None, workdir: Path) -> None:
+def ensure_llama_cpp_build(
+    mcfg: dict[str, Any],
+    lcfg: dict[str, Any],
+    server_bin: Path,
+    ppl_bin: Path | None,
+    workdir: Path,
+    extra_bins: list[Path] | None = None,
+) -> None:
+    required_bins = [server_bin]
+    if ppl_bin is not None:
+        required_bins.append(ppl_bin)
+    required_bins.extend(extra_bins or [])
+
+    def have_required_bins() -> bool:
+        return all(is_file(path) for path in required_bins)
+
     source_artifact = lcfg.get("source_artifact") or mcfg.get("framework", {}).get("source_artifact")
     if not source_artifact:
-        if is_file(server_bin) and (ppl_bin is None or is_file(ppl_bin)):
+        if have_required_bins():
             return
         return
     source_dir = materialize_artifact(mcfg, str(source_artifact))
@@ -233,18 +248,19 @@ def ensure_llama_cpp_build(mcfg: dict[str, Any], lcfg: dict[str, Any], server_bi
     workdir_artifact = str(lcfg.get("workdir_artifact", "llama_cpp_build"))
     workdir_override = artifact_has_env_override(mcfg, workdir_artifact, "LFM25_LLAMA_WORKDIR")
     if workdir_override:
-        if is_file(server_bin) and (ppl_bin is None or is_file(ppl_bin)):
+        if have_required_bins():
             return
         cached_source = cmake_cached_source(workdir)
         if cached_source is not None and cached_source.resolve(strict=False) != source_dir.resolve(strict=False):
             raise RuntimeError(
                 f"operator-provided llama.cpp workdir {workdir} is configured from {cached_source}, "
-                f"not committed source {source_dir}; set LLAMA_CPP_ET_SERVER/LLAMA_CPP_ET_PERPLEXITY "
+                f"not committed source {source_dir}; set LLAMA_CPP_ET_SERVER/LLAMA_CPP_ET_PERPLEXITY/"
+                "LLAMA_CPP_ET_BENCH "
                 "to existing binaries or choose a clean LLAMA_CPP_ET_WORKDIR"
             )
     else:
         reset_stale_cmake_build(workdir, source_dir)
-    if is_file(server_bin) and (ppl_bin is None or is_file(ppl_bin)):
+    if have_required_bins():
         return
     build_cfg = artifact_config(mcfg, str(lcfg.get("workdir_artifact", "llama_cpp_build"))).get("build", {})
     cmake = str(build_cfg.get("cmake", "cmake"))
@@ -291,13 +307,20 @@ def score_common(model: str, variant: str, note: str = "") -> dict[str, Any]:
         "perplexity_error": None,
         "perplexity_tokens": None,
         "perplexity_prompt_tokens_per_second": None,
+        "llama_bench_tokens_per_second": None,
+        "llama_bench_tokens_per_second_stddev": None,
+        "llama_bench_prompt_tokens_per_second": None,
+        "llama_bench_prompt_tokens_per_second_stddev": None,
+        "llama_bench_prompt_tokens": None,
+        "llama_bench_generation_tokens": None,
+        "llama_bench_repetitions": None,
         "valid_dump": True,
         "valid_note": note,
         "emu_cycle_last": None,
         "elapsed_s": None,
         "note": note,
-        "sha": os.environ.get("GITHUB_SHA", "local"),
-        "ref": os.environ.get("GITHUB_REF", "local"),
+        "sha": os.environ.get("BENCHMARK_SHA", os.environ.get("GITHUB_SHA", "local")),
+        "ref": os.environ.get("BENCHMARK_REF", os.environ.get("GITHUB_REF", "local")),
         "team": os.environ.get("GITHUB_ACTOR", "local"),
         "run_url": run_url(),
         "scored_at": datetime.now(timezone.utc).isoformat(),
@@ -514,6 +537,155 @@ def run_perplexity(
     return metrics, failures
 
 
+def bench_number(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def bench_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_llama_bench_rows(text: str) -> list[dict[str, Any]]:
+    match = re.search(r"(?s)(\[\s*\{.*\}\s*\])", text)
+    if not match:
+        raise ValueError("JSON array not found")
+    parsed = json.loads(match.group(1))
+    if not isinstance(parsed, list):
+        raise ValueError("llama-bench JSON output is not a list")
+    return [row for row in parsed if isinstance(row, dict)]
+
+
+def select_llama_bench_row(rows: list[dict[str, Any]], prompt_tokens: int, generation_tokens: int) -> dict[str, Any] | None:
+    for row in rows:
+        if bench_int(row.get("n_prompt")) == prompt_tokens and bench_int(row.get("n_gen")) == generation_tokens:
+            return row
+    return rows[0] if len(rows) == 1 else None
+
+
+def run_llama_bench(
+    *,
+    mcfg: dict[str, Any],
+    lcfg: dict[str, Any],
+    bench_bin: Path | None,
+    model_path: Path,
+    workdir: Path,
+    run_dir: Path,
+    env: dict[str, str],
+) -> tuple[dict[str, Any], list[str]]:
+    bcfg = lcfg.get("llama_bench", {})
+    if bcfg.get("enabled", True) is False:
+        return {}, []
+    if bench_bin is None or not is_file(bench_bin):
+        return {}, [f"missing llama-bench: {bench_bin}"]
+
+    max_tokens = int(lcfg.get("max_tokens", 96))
+    prompt_tokens = int(bcfg.get("prompt_tokens", 0))
+    generation_tokens = int(bcfg.get("generation_tokens", min(max_tokens, 96)))
+    repetitions = int(bcfg.get("repetitions", 3))
+    timeout_s = int(bcfg.get("timeout_s", 900))
+    failures: list[str] = []
+    metrics: dict[str, Any] = {
+        "llama_bench_prompt_tokens": prompt_tokens if prompt_tokens > 0 else None,
+        "llama_bench_generation_tokens": generation_tokens,
+        "llama_bench_repetitions": repetitions,
+    }
+
+    runs: list[tuple[str, int, int]] = []
+    if prompt_tokens > 0:
+        runs.append(("pp", prompt_tokens, 0))
+    runs.append(("tg", 0, generation_tokens))
+
+    for mode, n_prompt, n_gen in runs:
+        log_path = run_dir / f"llama-bench-{mode}.log"
+        command_path = run_dir / f"llama-bench-{mode}-command.json"
+        cmd = [
+            str(bench_bin),
+            "-m",
+            str(model_path),
+            "-dev",
+            str(lcfg.get("device", "ET")),
+            "-ngl",
+            str(lcfg.get("gpu_layers", 99)),
+            "-b",
+            str(bcfg.get("batch_size", lcfg.get("batch_size", 512))),
+            "-ub",
+            str(bcfg.get("ubatch_size", lcfg.get("ubatch_size", 128))),
+            "-p",
+            str(n_prompt),
+            "-n",
+            str(n_gen),
+            "-r",
+            str(repetitions),
+            "-o",
+            "json",
+        ]
+        if lcfg.get("flash_attn") is not None:
+            cmd.extend(["-fa", "1" if bool(lcfg.get("flash_attn")) else "0"])
+        if bcfg.get("no_warmup", False):
+            cmd.append("--no-warmup")
+        for extra in bcfg.get("extra_args", []):
+            cmd.append(str(extra))
+        command_path.write_text(json.dumps(cmd, indent=2) + "\n")
+
+        stdout = ""
+        rc = 1
+        try:
+            completed = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                cwd=str(workdir),
+                env=env,
+                timeout=timeout_s,
+            )
+            rc = completed.returncode
+            stdout = completed.stdout.decode(errors="replace")
+        except subprocess.TimeoutExpired as exc:
+            stdout = (exc.stdout or b"").decode(errors="replace") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+            failures.append(f"llama-bench {mode} timed out after {timeout_s}s")
+
+        log_path.write_text("$ " + " ".join(cmd) + "\n\n" + stdout)
+        if rc != 0:
+            failures.append(f"llama-bench {mode} exited rc={rc}")
+
+        try:
+            rows = parse_llama_bench_rows(stdout)
+            row = select_llama_bench_row(rows, n_prompt, n_gen)
+            if row is None:
+                failures.append(f"llama-bench {mode} row not found")
+                continue
+            avg_ts = bench_number(row.get("avg_ts"))
+            stddev_ts = bench_number(row.get("stddev_ts"))
+            samples = row.get("samples_ts")
+            if mode == "tg":
+                if avg_ts is None or avg_ts <= 0:
+                    failures.append("missing positive llama-bench tg avg_ts")
+                metrics["llama_bench_tokens_per_second"] = avg_ts
+                metrics["llama_bench_tokens_per_second_stddev"] = stddev_ts
+                metrics["llama_bench_generation_tokens"] = bench_int(row.get("n_gen")) or generation_tokens
+            else:
+                if avg_ts is None or avg_ts <= 0:
+                    failures.append("missing positive llama-bench pp avg_ts")
+                metrics["llama_bench_prompt_tokens_per_second"] = avg_ts
+                metrics["llama_bench_prompt_tokens_per_second_stddev"] = stddev_ts
+                metrics["llama_bench_prompt_tokens"] = bench_int(row.get("n_prompt")) or prompt_tokens
+            if isinstance(samples, list) and samples:
+                metrics["llama_bench_repetitions"] = len(samples)
+            if not any("ET" in str(row.get(key, "")) for key in ("backend", "backends", "device", "devices")):
+                if "using device ET" not in stdout and "ET device 0" not in stdout:
+                    failures.append(f"ET device use not observed in llama-bench {mode} output")
+        except Exception as exc:
+            failures.append(f"could not parse llama-bench {mode} JSON: {exc}")
+
+    return metrics, failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -569,8 +741,15 @@ def main() -> int:
             ppl_bin = resolve_artifact_path(mcfg, str(pcfg["perplexity_artifact"]), fallback_env="LFM25_LLAMA_PERPLEXITY")
         else:
             ppl_bin = Path(str(pcfg.get("perplexity_bin") or (server_bin.parent / "llama-perplexity")))
+    bench_bin = None
+    bcfg = lcfg.get("llama_bench", {})
+    if bcfg.get("enabled", True) is not False:
+        if bcfg.get("bench_artifact"):
+            bench_bin = resolve_artifact_path(mcfg, str(bcfg["bench_artifact"]), fallback_env="LLAMA_CPP_ET_BENCH")
+        else:
+            bench_bin = resolve_artifact_path(mcfg, "llama_bench", fallback_env="LLAMA_CPP_ET_BENCH")
     try:
-        ensure_llama_cpp_build(mcfg, lcfg, server_bin, ppl_bin, workdir)
+        ensure_llama_cpp_build(mcfg, lcfg, server_bin, ppl_bin, workdir, extra_bins=[bench_bin] if bench_bin else [])
     except Exception as exc:
         note = f"artifact setup failed: {exc}"
         score.update({"status": "fail", "note": note, "valid_note": note})
@@ -584,6 +763,8 @@ def main() -> int:
         missing.append(f"missing model: {model_path}")
     if not is_dir(workdir):
         missing.append(f"missing workdir: {workdir}")
+    if bench_bin is not None and not is_file(bench_bin):
+        missing.append(f"missing llama-bench: {bench_bin}")
     if missing:
         score.update({"status": "skipped", "note": "; ".join(missing), "valid_note": "; ".join(missing)})
         write_score(score_path, score)
@@ -641,6 +822,8 @@ def main() -> int:
     lock_file = None
     ppl_metrics: dict[str, Any] = {}
     ppl_failures: list[str] = []
+    bench_metrics: dict[str, Any] = {}
+    bench_failures: list[str] = []
     try:
         board_lock.parent.mkdir(parents=True, exist_ok=True)
         lock_file = board_lock.open("a")
@@ -675,6 +858,15 @@ def main() -> int:
                 mcfg=mcfg,
                 lcfg=lcfg,
                 server_bin=server_bin,
+                model_path=model_path,
+                workdir=workdir,
+                run_dir=run_dir,
+                env=env,
+            )
+            bench_metrics, bench_failures = run_llama_bench(
+                mcfg=mcfg,
+                lcfg=lcfg,
+                bench_bin=bench_bin,
                 model_path=model_path,
                 workdir=workdir,
                 run_dir=run_dir,
@@ -729,12 +921,16 @@ def main() -> int:
         failures.append("missing positive predicted_per_second")
     failures.extend(validate_log(log_text, request_path, require_full_offload=bool(lcfg.get("require_full_offload", True))))
     failures.extend(ppl_failures)
+    failures.extend(bench_failures)
 
     passed = not failures
     ppl = ppl_metrics.get("perplexity")
     pass_note = "llama-server ET completion valid"
     if isinstance(ppl, float):
         pass_note += f"; PPL {ppl:.2f}"
+    bench_tps = bench_metrics.get("llama_bench_tokens_per_second")
+    if isinstance(bench_tps, (int, float)):
+        pass_note += f"; llama-bench tg {bench_tps:.2f} tok/s"
     note = pass_note if passed else "; ".join(failures)
     score.update(
         {
@@ -749,6 +945,13 @@ def main() -> int:
             "perplexity_error": ppl_metrics.get("perplexity_error"),
             "perplexity_tokens": ppl_metrics.get("perplexity_tokens"),
             "perplexity_prompt_tokens_per_second": ppl_metrics.get("perplexity_prompt_tokens_per_second"),
+            "llama_bench_tokens_per_second": bench_metrics.get("llama_bench_tokens_per_second"),
+            "llama_bench_tokens_per_second_stddev": bench_metrics.get("llama_bench_tokens_per_second_stddev"),
+            "llama_bench_prompt_tokens_per_second": bench_metrics.get("llama_bench_prompt_tokens_per_second"),
+            "llama_bench_prompt_tokens_per_second_stddev": bench_metrics.get("llama_bench_prompt_tokens_per_second_stddev"),
+            "llama_bench_prompt_tokens": bench_metrics.get("llama_bench_prompt_tokens"),
+            "llama_bench_generation_tokens": bench_metrics.get("llama_bench_generation_tokens"),
+            "llama_bench_repetitions": bench_metrics.get("llama_bench_repetitions"),
             "elapsed_s": elapsed,
             "content_prefix": content[:200],
             "valid_note": note,

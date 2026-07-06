@@ -10,8 +10,8 @@
   "artifacts_file": "../artifacts.json",
   "canonical_variant": "SmolLM2-360M-Instruct-Q8_0",
   "score": {
-    "metric": "tokens_per_second",
-    "label": "Decode tokens/s",
+    "metric": "llama_bench_tokens_per_second",
+    "label": "llama-bench tg tokens/s",
     "higher_is_better": true
   },
   "llama_server": {
