@@ -22,7 +22,7 @@ Results are from real ET-SoC1 silicon via the main-branch board workflow. Each m
 
 | Model | Best participant | Variant | Metric | Score | PPL | Run |
 |-------|------------------|---------|--------|-------|-----|-----|
-| dncnn | AFOliveira | `v3x_01_oc2_base` | Kernel wait | 0.039953s | - | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |
+| dncnn | karabambus | `int8_tfma_8hart` | Kernel wait | 0.010588s | - | [26042ad](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28862225483) |
 | yolo | AFOliveira | `y10_00_base` | Kernel wait | 0.133710s | - | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |
 | whisper | AFOliveira | `w10_00_base` | Kernel wait | 0.041135s | - | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |
 | lfm25 | AFOliveira | `LFM2.5-1.2B-Instruct-Q8_0` | Decode tokens/s | 3.12 | 21.70 (+/- 4.45) | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |
