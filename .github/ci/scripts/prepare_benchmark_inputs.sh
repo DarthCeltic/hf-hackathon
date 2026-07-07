@@ -54,6 +54,12 @@ for model in cfg.get("models", {}).values():
             if path and path not in seen:
                 seen.add(path)
                 print(path)
+    accuracy = model.get("accuracy", {})
+    paths = accuracy.get("reference_paths") or [accuracy.get("reference_path")]
+    for path in paths:
+        if path and path not in seen:
+            seen.add(path)
+            print(path)
 PY
 }
 

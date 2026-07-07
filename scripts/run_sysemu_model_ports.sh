@@ -147,6 +147,20 @@ print("|".join(f"{item['address']},{item['path']}" for item in loads))
 PY
 }
 
+model_dump_size() {
+  local model="$1"
+  python3 - "$CHECKOUT" "$BENCHMARK_CONFIG" "$model" <<'PY'
+import sys
+
+repo, cfg_path, model = sys.argv[1:4]
+sys.path.insert(0, f"{repo}/.github/ci/scripts")
+from benchmark_config_helpers import load_config
+
+value = load_config(cfg_path)["models"][model].get("dump_size", 8192)
+print(int(value, 0) if isinstance(value, str) else int(value))
+PY
+}
+
 add_job() {
   local suite="$1" model="$2" variant="$3" elf="$4"
   if [[ ${#selected_models[@]} -gt 0 ]] && ! contains_line "$model" "${selected_models[@]}"; then
@@ -161,7 +175,7 @@ add_job() {
   job_elf+=("$elf")
   job_loads+=("$(common_loads "$model")")
   job_mem+=("$((16 * 1024 * 1024))")
-  job_dump+=("8192")
+  job_dump+=("$(model_dump_size "$model")")
 }
 
 read_variants() {

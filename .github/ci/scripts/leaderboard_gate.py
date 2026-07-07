@@ -15,10 +15,156 @@ from benchmark_config_helpers import load_config, parse_model_selection
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_PATH = REPO_ROOT / ".github" / "ci" / "benchmark_config.json"
+BENCHMARK_CONFIG_REL = ".github/ci/benchmark_config.json"
+VALIDATION_ONLY_MODEL_CONFIG_KEYS = {"accuracy", "dump_magic", "dump_size"}
 
 
 def split_items(value: str | None) -> list[str]:
     return [item for item in (value or "").replace(",", " ").split() if item]
+
+
+def norm(path: str | Path) -> str:
+    value = str(path).replace("\\", "/")
+    while value.startswith("./"):
+        value = value[2:]
+    return value.strip("/")
+
+
+def is_under(path: str, prefix: str) -> bool:
+    path = norm(path)
+    prefix = norm(prefix).rstrip("/")
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def repo_rel(path: str | Path | None) -> str | None:
+    if not path:
+        return None
+    value = Path(path)
+    if value.is_absolute():
+        try:
+            return norm(value.relative_to(REPO_ROOT))
+        except ValueError:
+            return norm(value)
+    return norm(value)
+
+
+def changed_files(base_ref: str) -> list[str]:
+    if not base_ref:
+        return []
+    for rev_range in (f"{base_ref}...HEAD", f"{base_ref}..HEAD"):
+        proc = subprocess.run(
+            ["git", "diff", "--name-only", "--diff-filter=ACMRTUXB", rev_range],
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return [norm(line) for line in proc.stdout.splitlines() if line.strip()]
+    return []
+
+
+def raw_benchmark_config_from_ref(base_ref: str) -> dict[str, Any]:
+    data = load_json_from_ref(BENCHMARK_CONFIG_REL, base_ref)
+    return data if isinstance(data, dict) else {}
+
+
+def raw_benchmark_config_local() -> dict[str, Any]:
+    try:
+        data = json.loads((REPO_ROOT / BENCHMARK_CONFIG_REL).read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def strip_validation_only_keys(model_cfg: Any) -> Any:
+    if not isinstance(model_cfg, dict):
+        return model_cfg
+    return {
+        key: value
+        for key, value in model_cfg.items()
+        if key not in VALIDATION_ONLY_MODEL_CONFIG_KEYS
+    }
+
+
+def model_config_submission_changed(model: str, base_ref: str) -> bool:
+    old = raw_benchmark_config_from_ref(base_ref)
+    new = raw_benchmark_config_local()
+    old_model = old.get("models", {}).get(model, {}) if isinstance(old.get("models"), dict) else {}
+    new_model = new.get("models", {}).get(model, {}) if isinstance(new.get("models"), dict) else {}
+    return strip_validation_only_keys(old_model) != strip_validation_only_keys(new_model)
+
+
+def source_model_root(model_cfg: dict[str, Any]) -> str | None:
+    source = repo_rel(model_cfg.get("source"))
+    if not source:
+        return None
+    parts = source.split("/")
+    if len(parts) >= 2 and parts[0] == "ported_models":
+        return "/".join(parts[:2])
+    return str(Path(source).parent)
+
+
+def is_model_code_path(path: str) -> bool:
+    name = Path(path).name.lower()
+    if name in {"readme.md", "model.md", "third_party.md"}:
+        return False
+    if "/docs/" in path:
+        return False
+    return Path(path).suffix in {
+        ".c",
+        ".cc",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".s",
+        ".S",
+        ".sh",
+        ".py",
+        ".json",
+        ".txt",
+    }
+
+
+def model_submission_changed(
+    cfg: dict[str, Any],
+    model: str,
+    files: list[str],
+    base_ref: str,
+) -> bool:
+    if not base_ref:
+        return True
+    model_cfg = cfg.get("models", {}).get(model, {})
+    source = repo_rel(model_cfg.get("source"))
+    config_path = repo_rel(model_cfg.get("_config_path"))
+    artifacts_path = repo_rel(model_cfg.get("_artifacts_path"))
+    root = source_model_root(model_cfg)
+
+    for path in files:
+        if path == BENCHMARK_CONFIG_REL:
+            if model_config_submission_changed(model, base_ref):
+                return True
+            continue
+        if config_path and path == config_path:
+            return True
+        if artifacts_path and path == artifacts_path:
+            return True
+        if source and path == source:
+            return True
+        if root and is_under(path, root) and is_model_code_path(path):
+            return True
+
+        artifacts = model_cfg.get("artifacts", {})
+        if isinstance(artifacts, dict):
+            for artifact in artifacts.values():
+                if not isinstance(artifact, dict):
+                    continue
+                source_path = repo_rel(artifact.get("submodule_path"))
+                if source_path and is_under(path, source_path):
+                    return True
+
+    return False
 
 
 def metric_config(cfg: dict[str, Any], model: str) -> tuple[str, str, bool]:
@@ -151,7 +297,8 @@ def main() -> int:
         (
             "Policy: every selected model must pass board CI and beat the current base-branch "
             "leaderboard value for its primary metric. Models with llama-perplexity enabled "
-            f"must also stay within {args.max_ppl_regression:.0%} of the best seen PPL."
+            f"must also stay within {args.max_ppl_regression:.0%} of the best seen PPL. "
+            "CI/scoring-only changes must pass board CI but do not need to improve runtime."
         ),
         "",
         "| Model | Metric | PR score | Current best | Verdict | Notes |",
@@ -160,6 +307,12 @@ def main() -> int:
 
     if not models and not unregistered:
         lines.append("| - | - | - | - | pass | No changed board leaderboard models were selected. |")
+
+    files = changed_files(args.base_ref)
+    submission_changed = {
+        model: model_submission_changed(cfg, model, files, args.base_ref)
+        for model in models
+    }
 
     for port in unregistered:
         failed = True
@@ -240,6 +393,12 @@ def main() -> int:
             )
             continue
 
+        if not submission_changed.get(model, True):
+            lines.append(
+                f"| {model} | {cell(label)} | {score_text} | {baseline_text} | pass | Board score passed for a CI/scoring-only change; no leaderboard improvement required.{ppl_note} |"
+            )
+            continue
+
         if beats_baseline(value, baseline_value, higher, args.min_relative_improvement):
             direction = "higher" if higher else "lower"
             lines.append(
@@ -260,7 +419,7 @@ def main() -> int:
     if failed:
         lines.append("Result: fail. Do not merge until every touched leaderboard model passes and improves.")
     else:
-        lines.append("Result: pass. The touched leaderboard models all improve or establish new baselines.")
+        lines.append("Result: pass. The touched leaderboard models satisfy the applicable board gate.")
 
     write_markdown(args.output, lines)
     return 1 if failed else 0

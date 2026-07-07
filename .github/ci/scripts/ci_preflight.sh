@@ -60,6 +60,115 @@ python3 .github/ci/scripts/format_pr_comment.py --scores-dir "$tmp" --output "$t
   --target board --models "" --unregistered "smoketest" --sha x --ref y >/dev/null \
   || bad "format_pr_comment.py failed"
 
+step "Score results accuracy gates"
+python3 - "$tmp" <<'PY' || bad "score_results.py accuracy gates failed"
+import json
+import os
+import struct
+import subprocess
+import sys
+import hashlib
+from pathlib import Path
+
+root = Path.cwd()
+tmp = Path(sys.argv[1])
+assets = tmp / "assets"
+scores = tmp / "scores"
+test_config_path = tmp / "benchmark_config.json"
+SUMMARY = struct.Struct("<16I")
+
+
+def write_results(model: str, variant: str, dump: bytes) -> Path:
+    run_dir = tmp / f"results-{model}"
+    job = run_dir / "jobs" / f"0001_smoke_{model}_{variant}"
+    job.mkdir(parents=True, exist_ok=True)
+    (job / "run.log").write_text("Kernel wait seconds: 0.010000\n")
+    (job / "dump.bin").write_bytes(dump)
+    (run_dir / "results.tsv").write_text(
+        "index\tsuite\tmodel\tvariant\tstatus\trc\telapsed_s\tkernel_wait_s\temu_cycle_last\tlog\tdump\tnote\n"
+        f"1\tsmoke\t{model}\t{variant}\tpass\t0\t1.000\t0.010000\t\t"
+        f"{(job / 'run.log').relative_to(run_dir)}\t{(job / 'dump.bin').relative_to(run_dir)}\t\n"
+    )
+    return run_dir
+
+
+def dump_with_summary(size: int, fields: list[int], writes: list[tuple[int, bytes]]) -> bytes:
+    data = bytearray(size)
+    data[0x1000:0x1000 + SUMMARY.size] = SUMMARY.pack(*fields)
+    for offset, payload in writes:
+        data[offset:offset + len(payload)] = payload
+    return bytes(data)
+
+
+def run_score(model: str, run_dir: Path, name: str) -> dict:
+    out = scores / f"{name}.json"
+    env = os.environ.copy()
+    env["BENCHMARK_ARTIFACT_ROOT"] = str(assets)
+    env["BENCHMARK_CONFIG"] = str(test_config_path)
+    subprocess.run(
+        [
+            sys.executable,
+            str(root / ".github/ci/scripts/score_results.py"),
+            "--model",
+            model,
+            "--results-dir",
+            str(run_dir),
+            "--output",
+            str(out),
+        ],
+        cwd=root,
+        env=env,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    return json.loads(out.read_text())
+
+
+dncnn_ref = bytes([7]) * (64 * 64)
+test_config = json.loads((root / ".github/ci/benchmark_config.json").read_text())
+test_config["models"]["dncnn"]["accuracy"]["expected_sha256"] = hashlib.sha256(dncnn_ref).hexdigest()
+test_config_path.write_text(json.dumps(test_config) + "\n")
+dncnn_fields = [
+    0xD3C11003, 1, 1, 64, 64, 16, 5, 1,
+    1, sum(dncnn_ref), sum(dncnn_ref), 1, 0, 0, 0, 0,
+]
+dncnn_good = dump_with_summary(0x12000, dncnn_fields, [(0x10000, dncnn_ref)])
+dncnn_bad = bytearray(dncnn_good)
+dncnn_bad[0x10000] = 9
+dncnn_good_score = run_score("dncnn", write_results("dncnn", "int8_tfma_8hart", dncnn_good), "dncnn-good")
+dncnn_bad_score = run_score("dncnn", write_results("dncnn", "int8_tfma_8hart", bytes(dncnn_bad)), "dncnn-bad")
+assert dncnn_good_score["passed"] and dncnn_good_score["valid_accuracy"]
+assert not dncnn_bad_score["passed"] and not dncnn_bad_score["valid_accuracy"]
+assert hashlib.sha256(dncnn_ref).hexdigest()[:12] in dncnn_good_score["valid_note"]
+
+yolo_payload = bytes([128]) * 102400
+yolo_fields = [
+    0x10500001, 1, 1, 80, 80, 16, 4, 1,
+    1, sum(yolo_payload), sum(yolo_payload), 1, 0, 16, 0, 0,
+]
+yolo_good = dump_with_summary(0x180000, yolo_fields, [(0x160000, yolo_payload)])
+yolo_bad = bytearray(yolo_good)
+yolo_bad[0x160000 + 17] = 127
+yolo_good_score = run_score("yolo", write_results("yolo", "y10_00_base", yolo_good), "yolo-good")
+yolo_bad_score = run_score("yolo", write_results("yolo", "y10_00_base", bytes(yolo_bad)), "yolo-bad")
+assert yolo_good_score["passed"] and yolo_good_score["valid_accuracy"]
+assert not yolo_bad_score["passed"] and not yolo_bad_score["valid_accuracy"]
+
+whisper_expected = 2097152
+whisper_fields = [
+    0x57485350, 1, 1, 256, 64, 256, 1, 1,
+    whisper_expected, whisper_expected, 1, 0, 0, 0, 0, 0,
+]
+whisper_bad_fields = list(whisper_fields)
+whisper_bad_fields[8] = whisper_bad_fields[9] = whisper_expected + 1
+whisper_good = dump_with_summary(0x2000, whisper_fields, [])
+whisper_bad = dump_with_summary(0x2000, whisper_bad_fields, [])
+whisper_good_score = run_score("whisper", write_results("whisper", "w10_00_base", whisper_good), "whisper-good")
+whisper_bad_score = run_score("whisper", write_results("whisper", "w10_00_base", whisper_bad), "whisper-bad")
+assert whisper_good_score["passed"] and whisper_good_score["valid_accuracy"]
+assert not whisper_bad_score["passed"] and not whisper_bad_score["valid_accuracy"]
+PY
+
 step "Leaderboard gate renders"
 python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-pass.md" \
   --target board --models "" --unregistered "" --base-ref HEAD >/dev/null \
@@ -104,6 +213,28 @@ if python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "
   --target board --models "llama32_1b" --base-ref HEAD >/dev/null; then
   bad "leaderboard_gate.py should fail PPL more than 20% worse than best seen"
 fi
+python3 - "$tmp" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+tmp = Path(sys.argv[1])
+baseline = json.loads(Path("data/yolo.json").read_text())["entries"][0]
+score = {
+    "model": "yolo",
+    "variant": baseline["variant"],
+    "status": "pass",
+    "passed": True,
+    "kernel_wait_s": baseline["kernel_wait_s"] + 1.0,
+    "valid_dump": True,
+    "valid_accuracy": True,
+    "valid_note": "dump valid; accuracy valid",
+}
+(tmp / "score-yolo.json").write_text(json.dumps(score) + "\n")
+PY
+python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-ci-only-pass.md" \
+  --target board --models "yolo" --base-ref HEAD >/dev/null \
+  || bad "leaderboard_gate.py should allow non-submission CI/scoring-only changes without runtime improvement"
 rm -rf "$tmp"
 
 step "Leaderboard team resolver"
