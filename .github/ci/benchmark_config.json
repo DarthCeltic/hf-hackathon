@@ -86,6 +86,13 @@
         }
       ],
       "dump_magic": "0xD3C11003",
+      "dump_size": "0x12000",
+      "accuracy": {
+        "kind": "sha256",
+        "offset": "0x10000",
+        "count": 4096,
+        "expected_sha256": "78aacbc3fb34efb8ffa5467b931291ec2bdf5e19564fc45fe97b5affbc893dc6"
+      },
       "requires_dncnn_inputs": true
     },
     "yolo": {
@@ -106,6 +113,14 @@
         }
       ],
       "dump_magic": "0x10500001",
+      "dump_size": "0x180000",
+      "accuracy": {
+        "kind": "constant_u8",
+        "offset": "0x160000",
+        "count": 102400,
+        "expected_value": 128,
+        "max_abs": 0
+      },
       "requires_dncnn_inputs": false
     },
     "whisper": {
@@ -125,7 +140,11 @@
           "required": true
         }
       ],
-      "dump_magic": null,
+      "dump_magic": "0x57485350",
+      "accuracy": {
+        "kind": "checksum",
+        "expected_output_sum": 2097152
+      },
       "requires_dncnn_inputs": false
     },
     "lfm25": {

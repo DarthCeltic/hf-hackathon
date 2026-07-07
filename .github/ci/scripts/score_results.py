@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
+import hashlib
 import json
+import math
+import os
 import re
 import struct
 import sys
@@ -22,8 +26,14 @@ YOLO_MAGIC = 0x10500001
 SUMMARY = struct.Struct("<16I")
 
 
+def int_cfg(value: int | str) -> int:
+    if isinstance(value, int):
+        return value
+    return int(str(value), 0)
+
+
 def load_config() -> dict:
-    return load_benchmark_config(CONFIG_PATH)
+    return load_benchmark_config(os.environ.get("BENCHMARK_CONFIG", CONFIG_PATH))
 
 
 def wait_seconds(log_path: Path) -> float | None:
@@ -32,9 +42,19 @@ def wait_seconds(log_path: Path) -> float | None:
     return float(match.group(1)) if match else None
 
 
-def dump_summary(path: Path) -> dict:
+def dump_summary(path: Path, model: str = "") -> dict:
     data = path.read_bytes()[: 0x1000 + SUMMARY.size]
     fields = SUMMARY.unpack_from(data, 0x1000)
+    if model == "whisper":
+        return {
+            "magic": fields[0],
+            "active_harts": fields[1],
+            "passes": fields[2],
+            "done_count": fields[7],
+            "output_sum": fields[8],
+            "slot_sum": fields[9],
+            "ops": fields[10] | (fields[11] << 32),
+        }
     return {
         "magic": fields[0],
         "active_harts": fields[1],
@@ -46,13 +66,186 @@ def dump_summary(path: Path) -> dict:
     }
 
 
+def read_dump_bytes(path: Path, offset: int, count: int) -> bytes:
+    with path.open("rb") as f:
+        f.seek(offset)
+        data = f.read(count)
+    if len(data) != count:
+        raise ValueError(f"short dump read at 0x{offset:x}: got {len(data)} bytes, expected {count}")
+    return data
+
+
+def load_uint8_npy(path: Path) -> tuple[tuple[int, ...], bytes]:
+    data = path.read_bytes()
+    if not data.startswith(b"\x93NUMPY"):
+        raise ValueError("reference is not a .npy file")
+    major = data[6]
+    if major == 1:
+        header_len = struct.unpack_from("<H", data, 8)[0]
+        header_start = 10
+    elif major in (2, 3):
+        header_len = struct.unpack_from("<I", data, 8)[0]
+        header_start = 12
+    else:
+        raise ValueError(f"unsupported .npy version {major}.{data[7]}")
+
+    header = ast.literal_eval(data[header_start : header_start + header_len].decode("latin1").strip())
+    if header.get("fortran_order"):
+        raise ValueError("fortran-order .npy references are not supported")
+    if header.get("descr") not in ("|u1", "u1"):
+        raise ValueError(f"expected uint8 .npy reference, got {header.get('descr')}")
+    shape = tuple(int(v) for v in header["shape"])
+    count = math.prod(shape)
+    payload = data[header_start + header_len :]
+    if len(payload) != count:
+        raise ValueError(f"reference payload has {len(payload)} bytes, expected {count}")
+    return shape, payload
+
+
+def artifact_root() -> Path:
+    return Path(
+        os.environ.get("BENCHMARK_ARTIFACT_ROOT")
+        or os.environ.get("AMP_ROOT")
+        or REPO_ROOT / "local-artifacts" / "model-port-benchmarks"
+    )
+
+
+def resolve_reference(paths: list[str]) -> Path | None:
+    roots = [artifact_root(), REPO_ROOT]
+    for rel in paths:
+        candidate = Path(rel)
+        if candidate.is_absolute() and candidate.is_file():
+            return candidate
+        for root in roots:
+            path = root / rel
+            if path.is_file():
+                return path
+    return None
+
+
+def byte_diff_metrics(actual: bytes, expected: bytes) -> tuple[int, float]:
+    if len(actual) != len(expected):
+        raise ValueError(f"length mismatch: actual {len(actual)} bytes, expected {len(expected)} bytes")
+    max_abs = 0
+    total = 0
+    for a, b in zip(actual, expected):
+        diff = abs(a - b)
+        total += diff
+        if diff > max_abs:
+            max_abs = diff
+    mean_abs = total / len(actual) if actual else 0.0
+    return max_abs, mean_abs
+
+
+def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: dict | None) -> tuple[bool, str, dict]:
+    acfg = mcfg.get("accuracy")
+    if not acfg:
+        return True, "no accuracy gate configured", {
+            "valid_accuracy": True,
+            "accuracy_kind": None,
+            "accuracy_max_abs": None,
+            "accuracy_mean_abs": None,
+            "accuracy_reference": None,
+        }
+
+    kind = acfg.get("kind")
+    metrics = {
+        "valid_accuracy": False,
+        "accuracy_kind": kind,
+        "accuracy_max_abs": None,
+        "accuracy_mean_abs": None,
+        "accuracy_reference": None,
+    }
+
+    try:
+        if kind == "checksum":
+            if summary is None:
+                return False, "accuracy check failed: missing dump summary", metrics
+            expected = int_cfg(acfg["expected_output_sum"])
+            actual = int(summary.get("output_sum", -1))
+            ok = actual == expected
+            note = f"accuracy checksum {'valid' if ok else 'failed'} output_sum={actual} expected={expected}"
+            return ok, note, metrics | {"valid_accuracy": ok}
+
+        if kind == "sha256":
+            if dump_path is None or not dump_path.is_file():
+                return False, "accuracy check failed: missing dump.bin", metrics
+            offset = int_cfg(acfg["offset"])
+            count = int_cfg(acfg["count"])
+            expected = str(acfg["expected_sha256"]).lower()
+            actual = hashlib.sha256(read_dump_bytes(dump_path, offset, count)).hexdigest()
+            ok = actual == expected
+            note = (
+                f"accuracy sha256 {'valid' if ok else 'failed'} "
+                f"actual={actual[:12]} expected={expected[:12]}"
+            )
+            return ok, note, metrics | {"valid_accuracy": ok}
+
+        if kind == "constant_u8":
+            if dump_path is None or not dump_path.is_file():
+                return False, "accuracy check failed: missing dump.bin", metrics
+            offset = int_cfg(acfg["offset"])
+            count = int_cfg(acfg["count"])
+            expected_value = int_cfg(acfg["expected_value"])
+            max_allowed = int_cfg(acfg.get("max_abs", 0))
+            actual = read_dump_bytes(dump_path, offset, count)
+            expected = bytes([expected_value]) * count
+            max_abs, mean_abs = byte_diff_metrics(actual, expected)
+            ok = max_abs <= max_allowed
+            note = (
+                f"accuracy {'valid' if ok else 'failed'} constant_u8 "
+                f"max_abs={max_abs} mean_abs={mean_abs:.6f} gate={max_allowed}"
+            )
+            return ok, note, metrics | {
+                "valid_accuracy": ok,
+                "accuracy_max_abs": max_abs,
+                "accuracy_mean_abs": mean_abs,
+            }
+
+        if kind == "uint8_npy":
+            if dump_path is None or not dump_path.is_file():
+                return False, "accuracy check failed: missing dump.bin", metrics
+            ref_paths = acfg.get("reference_paths") or [acfg.get("reference_path")]
+            ref_paths = [str(path) for path in ref_paths if path]
+            ref_path = resolve_reference(ref_paths)
+            if ref_path is None:
+                return False, "accuracy check failed: missing reference " + ", ".join(ref_paths), metrics
+            shape, expected = load_uint8_npy(ref_path)
+            cfg_shape = tuple(int(v) for v in acfg.get("shape", shape))
+            if shape != cfg_shape:
+                return False, f"accuracy check failed: reference shape {shape} != configured {cfg_shape}", metrics
+            actual = read_dump_bytes(dump_path, int_cfg(acfg["offset"]), len(expected))
+            max_abs, mean_abs = byte_diff_metrics(actual, expected)
+            max_allowed = int_cfg(acfg.get("max_abs", 0))
+            ok = max_abs <= max_allowed
+            rel = str(ref_path)
+            try:
+                rel = str(ref_path.relative_to(REPO_ROOT))
+            except ValueError:
+                pass
+            note = (
+                f"accuracy {'valid' if ok else 'failed'} uint8_npy "
+                f"max_abs={max_abs} mean_abs={mean_abs:.6f} gate={max_allowed}"
+            )
+            return ok, note, metrics | {
+                "valid_accuracy": ok,
+                "accuracy_max_abs": max_abs,
+                "accuracy_mean_abs": mean_abs,
+                "accuracy_reference": rel,
+            }
+
+        return False, f"accuracy check failed: unknown kind {kind}", metrics
+    except Exception as exc:
+        return False, f"accuracy check failed: {exc}", metrics
+
+
 def validate_dump(model: str, dump_path: Path | None, magic_cfg: str | None) -> tuple[bool, str]:
     if magic_cfg is None:
         return True, "no dump magic configured"
     if dump_path is None or not dump_path.is_file():
         return False, "missing dump.bin"
     magic_expected = int(magic_cfg, 0)
-    s = dump_summary(dump_path)
+    s = dump_summary(dump_path, model)
     ok = (
         s["magic"] == magic_expected
         and s["done_count"] == s["active_harts"]
@@ -127,12 +320,19 @@ def score_from_results(
         kernel_wait = f"{w:.6f}" if w is not None else ""
 
     valid_dump, valid_note = validate_dump(model, dump_path, magic_cfg)
-    passed = status == "pass" and bool(kernel_wait) and valid_dump
+    parsed_summary = dump_summary(dump_path, model) if dump_path and dump_path.is_file() else None
+    valid_accuracy, accuracy_note, accuracy_metrics = validate_accuracy(model, dump_path, mcfg, parsed_summary)
+    combined_note = valid_note
+    if accuracy_note:
+        combined_note = f"{valid_note}; {accuracy_note}"
+    passed = status == "pass" and bool(kernel_wait) and valid_dump and valid_accuracy
+
+    score_status = "pass" if passed else (status if status and status != "pass" else "fail")
 
     return {
         "model": model,
         "variant": variant,
-        "status": "pass" if passed else status or "fail",
+        "status": score_status,
         "passed": passed,
         "kernel_wait_s": float(kernel_wait) if kernel_wait else None,
         "tokens_per_second": None,
@@ -145,7 +345,8 @@ def score_from_results(
         "perplexity_tokens": None,
         "perplexity_prompt_tokens_per_second": None,
         "valid_dump": valid_dump,
-        "valid_note": valid_note,
+        "valid_note": combined_note,
+        **accuracy_metrics,
         "emu_cycle_last": row.get("emu_cycle_last") or None,
         "elapsed_s": float(row["elapsed_s"]) if row.get("elapsed_s") else None,
         "note": row.get("note") or "",
@@ -183,6 +384,11 @@ def fail_payload(
         "perplexity_tokens": None,
         "perplexity_prompt_tokens_per_second": None,
         "valid_dump": False,
+        "valid_accuracy": False,
+        "accuracy_kind": None,
+        "accuracy_max_abs": None,
+        "accuracy_mean_abs": None,
+        "accuracy_reference": None,
         "valid_note": note,
         "emu_cycle_last": None,
         "elapsed_s": None,

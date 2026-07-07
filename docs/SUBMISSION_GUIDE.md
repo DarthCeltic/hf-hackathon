@@ -55,6 +55,15 @@ valid board score. Set the optional repository variable
 `LEADERBOARD_MIN_RELATIVE_IMPROVEMENT` to require a larger fractional gain, such
 as `0.01` for 1%.
 
+CI/scoring-only changes that do not change submitted model code or
+runtime-affecting model config still need passing board scores for the selected
+models, but they do not need to improve the leaderboard runtime.
+
+For ELF benchmark models, a passing board score also includes the configured
+dump accuracy gate in `.github/ci/benchmark_config.json`. The current gates
+check the DnCNN output against its uint8 reference hash, check YOLO's canonical
+uint8 output buffer, and check Whisper's deterministic output checksum.
+
 For models that run `llama-perplexity`, the same gate also protects quality:
 the PR score must include PPL, and it must be no more than 20% worse than the
 best PPL currently recorded for that model. Set
