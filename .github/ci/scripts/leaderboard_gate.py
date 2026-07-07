@@ -70,6 +70,18 @@ def best_entry(entries: list[dict[str, Any]], metric: str, higher: bool) -> dict
     return max(candidates, key=lambda entry: entry[metric]) if higher else min(candidates, key=lambda entry: entry[metric])
 
 
+def model_requires_ppl(cfg: dict[str, Any], model: str) -> bool:
+    model_cfg = cfg.get("models", {}).get(model, {})
+    return bool(model_cfg.get("llama_server", {}).get("perplexity", {}).get("enabled", False))
+
+
+def best_ppl_entry(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates = [entry for entry in entries if isinstance(entry.get("perplexity"), (int, float))]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda entry: entry["perplexity"])
+
+
 def score_value(score: dict[str, Any], metric: str) -> float | None:
     value = score.get(metric)
     if isinstance(value, (int, float)):
@@ -119,6 +131,12 @@ def main() -> int:
         default=float(os.environ.get("LEADERBOARD_MIN_RELATIVE_IMPROVEMENT", "0")),
         help="Require this fractional improvement over the current best score, e.g. 0.01 for 1%.",
     )
+    parser.add_argument(
+        "--max-ppl-regression",
+        type=float,
+        default=float(os.environ.get("LEADERBOARD_MAX_PPL_REGRESSION", "0.20")),
+        help="Allow at most this fractional PPL regression from the best seen PPL for perplexity-gated models.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(CONFIG_PATH)
@@ -130,7 +148,11 @@ def main() -> int:
     lines = [
         "## Leaderboard Gate",
         "",
-        "Policy: every selected model must pass board CI and beat the current base-branch leaderboard value for its primary metric.",
+        (
+            "Policy: every selected model must pass board CI and beat the current base-branch "
+            "leaderboard value for its primary metric. Models with llama-perplexity enabled "
+            f"must also stay within {args.max_ppl_regression:.0%} of the best seen PPL."
+        ),
         "",
         "| Model | Metric | PR score | Current best | Verdict | Notes |",
         "|-------|--------|----------|--------------|---------|-------|",
@@ -148,12 +170,16 @@ def main() -> int:
     for model in models:
         metric, label, higher = metric_config(cfg, model)
         score_path = scores_dir / f"score-{model}.json"
-        baseline = best_entry(leaderboard_entries(model, args.base_ref), metric, higher)
+        entries = leaderboard_entries(model, args.base_ref)
+        baseline = best_entry(entries, metric, higher)
         baseline_value = float(baseline[metric]) if baseline else None
         baseline_text = fmt_metric(baseline_value, metric)
         baseline_team = baseline.get("team") if baseline else None
         if baseline_team:
             baseline_text = f"{baseline_text} ({cell(baseline_team, limit=40)})"
+        requires_ppl = model_requires_ppl(cfg, model)
+        baseline_ppl = best_ppl_entry(entries)
+        baseline_ppl_value = float(baseline_ppl["perplexity"]) if baseline_ppl else None
 
         if not score_path.is_file():
             failed = True
@@ -186,16 +212,38 @@ def main() -> int:
                 f"| {model} | {cell(label)} | - | {baseline_text} | fail | Passing score has no `{metric}` value. |"
             )
             continue
+
+        ppl_note = ""
+        if requires_ppl:
+            ppl_value = score.get("perplexity")
+            if not isinstance(ppl_value, (int, float)):
+                failed = True
+                lines.append(
+                    f"| {model} | {cell(label)} | {score_text} | {baseline_text} | fail | Passing score has no PPL value. |"
+                )
+                continue
+            if baseline_ppl_value is not None:
+                max_allowed_ppl = baseline_ppl_value * (1.0 + args.max_ppl_regression)
+                if float(ppl_value) > max_allowed_ppl:
+                    failed = True
+                    lines.append(
+                        f"| {model} | {cell(label)} | {score_text} | {baseline_text} | fail | PPL {float(ppl_value):.2f} is worse than allowed max {max_allowed_ppl:.2f}; best seen PPL is {baseline_ppl_value:.2f}. |"
+                    )
+                    continue
+                ppl_note = f" PPL {float(ppl_value):.2f} is within {args.max_ppl_regression:.0%} of best seen {baseline_ppl_value:.2f}."
+            else:
+                ppl_note = f" PPL {float(ppl_value):.2f} recorded for new baseline."
+
         if baseline_value is None:
             lines.append(
-                f"| {model} | {cell(label)} | {score_text} | none | pass | First valid leaderboard score for this model. |"
+                f"| {model} | {cell(label)} | {score_text} | none | pass | First valid leaderboard score for this model.{ppl_note} |"
             )
             continue
 
         if beats_baseline(value, baseline_value, higher, args.min_relative_improvement):
             direction = "higher" if higher else "lower"
             lines.append(
-                f"| {model} | {cell(label)} | {score_text} | {baseline_text} | pass | New score is {direction} than current best. |"
+                f"| {model} | {cell(label)} | {score_text} | {baseline_text} | pass | New score is {direction} than current best.{ppl_note} |"
             )
         else:
             failed = True

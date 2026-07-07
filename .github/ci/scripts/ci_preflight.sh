@@ -68,6 +68,42 @@ if python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "
   --target board --models "" --unregistered "smoketest" --base-ref HEAD >/dev/null; then
   bad "leaderboard_gate.py should fail unregistered ports"
 fi
+python3 - "$tmp" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+tmp = Path(sys.argv[1])
+baseline = json.loads(Path("data/llama32_1b.json").read_text())["entries"][0]
+score = {
+    "model": "llama32_1b",
+    "variant": baseline["variant"],
+    "status": "pass",
+    "passed": True,
+    "tokens_per_second": baseline["tokens_per_second"] + 1.0,
+    "perplexity": baseline["perplexity"] * 1.1,
+}
+(tmp / "score-llama32_1b.json").write_text(json.dumps(score) + "\n")
+PY
+python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-ppl-pass.md" \
+  --target board --models "llama32_1b" --base-ref HEAD >/dev/null \
+  || bad "leaderboard_gate.py should allow PPL within 20% of best seen"
+python3 - "$tmp" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+tmp = Path(sys.argv[1])
+path = tmp / "score-llama32_1b.json"
+score = json.loads(path.read_text())
+baseline = json.loads(Path("data/llama32_1b.json").read_text())["entries"][0]
+score["perplexity"] = baseline["perplexity"] * 1.21
+path.write_text(json.dumps(score) + "\n")
+PY
+if python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-ppl-fail.md" \
+  --target board --models "llama32_1b" --base-ref HEAD >/dev/null; then
+  bad "leaderboard_gate.py should fail PPL more than 20% worse than best seen"
+fi
 rm -rf "$tmp"
 
 step "Leaderboard team resolver"
