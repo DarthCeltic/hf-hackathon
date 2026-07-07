@@ -16,6 +16,7 @@ print(outer, launcher, benchmark_device(cfg))
 export SYSEMU_TIMEOUT SYSEMU_LAUNCHER_TIMEOUT BENCHMARK_DEVICE
 
 model="${1:?model required}"
+leaderboard_team="${LEADERBOARD_TEAM:-${GITHUB_ACTOR:-local}}"
 
 python3 - "$model" "$BENCHMARK_CONFIG" "$REPO_ROOT" <<'PY'
 import sys
@@ -39,7 +40,7 @@ write_score() {
     --output "${BENCHMARK_OUTPUT}/score-${model}.json" \
     --sha "${GITHUB_SHA:-local}" \
     --ref "${GITHUB_REF:-local}" \
-    --actor "${GITHUB_ACTOR:-local}" \
+    --actor "$leaderboard_team" \
     --run-url "$run_url" \
     --status "$status" \
     --note "$note"
@@ -85,7 +86,11 @@ if [[ "$model" == "dncnn" && "$requires_dncnn" -eq 1 && "$DNCNN_INPUTS_READY" -e
     --model "$model" \
     --status skipped \
     --note "DnCNN input blobs missing. Set BENCHMARK_ASSETS_URL or BENCHMARK_ASSETS_DIR." \
-    --output "${BENCHMARK_OUTPUT}/score-${model}.json"
+    --output "${BENCHMARK_OUTPUT}/score-${model}.json" \
+    --sha "${GITHUB_SHA:-local}" \
+    --ref "${GITHUB_REF:-local}" \
+    --actor "$leaderboard_team" \
+    --run-url "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-local}/actions/runs/${GITHUB_RUN_ID:-0}"
   exit 0
 fi
 
@@ -170,7 +175,7 @@ score_common=(
   --output "$score_out"
   --sha "${GITHUB_SHA:-local}"
   --ref "${GITHUB_REF:-local}"
-  --actor "${GITHUB_ACTOR:-local}"
+  --actor "$leaderboard_team"
   --run-url "$run_url"
 )
 

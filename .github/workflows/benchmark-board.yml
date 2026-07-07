@@ -4,9 +4,9 @@ name: ET-SoC1 board benchmark
 #
 # External fork PRs only reach the board job after GitHub's required
 # external-contributor workflow approval gate has released the run. Same-repo
-# PRs select the changed configured board models and run them on the
-# self-hosted ET-SoC1 runner. Pushes to main run the default board suite and can
-# update data/*.json.
+# PRs and pushes to main select the changed configured board models and run them
+# on the self-hosted ET-SoC1 runner. Pushes to main can update data/*.json.
+# Manual dispatches can run the default board suite or all configured models.
 
 on:
   pull_request:
@@ -102,14 +102,26 @@ jobs:
           INPUT_MODELS: ${{ github.event.inputs.models || '' }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          PUSH_BEFORE_SHA: ${{ github.event.before || '' }}
+          PUSH_HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           unregistered=""
+          zero_sha="0000000000000000000000000000000000000000"
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             models="$(python3 .github/ci/scripts/changed_benchmark_models.py \
               --target board \
               --base "$PR_BASE_SHA" \
               --head "$PR_HEAD_SHA" \
+              --scope changed \
+              --format space \
+              --unregistered-out unregistered.txt)"
+            unregistered="$(cat unregistered.txt 2>/dev/null || true)"
+          elif [[ "$EVENT_NAME" == "push" && -n "$PUSH_BEFORE_SHA" && "$PUSH_BEFORE_SHA" != "$zero_sha" ]]; then
+            models="$(python3 .github/ci/scripts/changed_benchmark_models.py \
+              --target board \
+              --base "$PUSH_BEFORE_SHA" \
+              --head "$PUSH_HEAD_SHA" \
               --scope changed \
               --format space \
               --unregistered-out unregistered.txt)"
@@ -192,6 +204,14 @@ jobs:
             echo "pr=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Resolve leaderboard team
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          team="$(.github/ci/scripts/resolve_leaderboard_team.sh "${{ steps.bench.outputs.sha }}")"
+          echo "LEADERBOARD_TEAM=$team" >> "$GITHUB_ENV"
+          echo "Leaderboard team: \`$team\`" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Resolve board host paths
         run: |
           if [[ -z "${ET_PLATFORM_SRC:-}" ]]; then
@@ -230,7 +250,7 @@ jobs:
               --output "board-scores/score-${model}.json" \
               --sha "${{ steps.bench.outputs.sha }}" \
               --ref "${{ steps.bench.outputs.ref }}" \
-              --actor "${{ github.actor }}" \
+              --actor "${LEADERBOARD_TEAM:-${GITHUB_ACTOR:-local}}" \
               --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
               --status skipped \
               --note "$note"
@@ -327,7 +347,7 @@ jobs:
               --output "board-scores/score-${model}.json" \
               --sha "${{ steps.bench.outputs.sha }}" \
               --ref "${{ steps.bench.outputs.ref }}" \
-              --actor "${{ github.actor }}" \
+              --actor "${LEADERBOARD_TEAM:-${GITHUB_ACTOR:-local}}" \
               --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
               --status fail \
               --note "$note"
@@ -475,8 +495,8 @@ jobs:
 
   update-leaderboard:
     name: Update board leaderboard
-    needs: board-benchmark
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [select-board-models, board-benchmark]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.select-board-models.outputs.has_models == '1' && needs.board-benchmark.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -492,7 +512,9 @@ jobs:
           path: board-scores
 
       - name: Merge board scores into leaderboard
-        run: python3 .github/ci/scripts/merge_leaderboard.py --scores-dir board-scores
+        env:
+          SELECTED_MODELS: ${{ needs.select-board-models.outputs.models }}
+        run: python3 .github/ci/scripts/merge_leaderboard.py --scores-dir board-scores --models "$SELECTED_MODELS"
 
       - name: Commit leaderboard
         run: |
