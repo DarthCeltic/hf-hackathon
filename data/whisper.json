@@ -2,8 +2,26 @@
   "model": "whisper",
   "metric": "kernel_wait_s",
   "lower_is_better": true,
-  "updated_at": "2026-07-07T13:06:05.643068+00:00",
+  "updated_at": "2026-07-07T14:53:19.427127+00:00",
   "entries": [
+    {
+      "team": "alien1403",
+      "variant": "w10_00_base",
+      "kernel_wait_s": 0.0374401,
+      "tokens_per_second": null,
+      "prompt_tokens_per_second": null,
+      "prompt_tokens": null,
+      "completion_tokens": null,
+      "total_tokens": null,
+      "perplexity": null,
+      "perplexity_error": null,
+      "perplexity_tokens": null,
+      "perplexity_prompt_tokens_per_second": null,
+      "sha": "5323435b5cf3f7de1d1b279ef52b1ab42e6d940b",
+      "ref": "refs/heads/main",
+      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/28875691389",
+      "scored_at": "2026-07-07T14:53:07.771499+00:00"
+    },
     {
       "team": "AFOliveira",
       "variant": "w10_00_base",
