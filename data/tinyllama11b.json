@@ -2,14 +2,14 @@
   "model": "tinyllama11b",
   "metric": "tokens_per_second",
   "lower_is_better": false,
-  "updated_at": "2026-07-06T08:12:34.841715+00:00",
+  "updated_at": "2026-07-07T10:11:13.827678+00:00",
   "entries": [
     {
       "team": "AFOliveira",
       "variant": "TinyLlama-1.1B-Chat-v1.0-Q8_0",
       "kernel_wait_s": null,
-      "tokens_per_second": 11.26302771537813,
-      "prompt_tokens_per_second": 50.27904872039821,
+      "tokens_per_second": 11.263632955747417,
+      "prompt_tokens_per_second": 50.21568833752594,
       "prompt_tokens": 21,
       "completion_tokens": 96,
       "total_tokens": 117,
@@ -17,10 +17,10 @@
       "perplexity_error": 7.70301,
       "perplexity_tokens": 512,
       "perplexity_prompt_tokens_per_second": 75.69,
-      "sha": "a2a738afb0794cda92e4e157ec5975f9b287204f",
+      "sha": "e3c6cd8a8d97e6b2a1b22e87869768b62fb05ae4",
       "ref": "refs/heads/main",
-      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/28777211989",
-      "scored_at": "2026-07-06T08:11:55.827664+00:00"
+      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858256484",
+      "scored_at": "2026-07-07T10:10:37.758201+00:00"
     }
   ]
 }
