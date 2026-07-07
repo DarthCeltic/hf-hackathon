@@ -55,6 +55,11 @@ valid board score. Set the optional repository variable
 `LEADERBOARD_MIN_RELATIVE_IMPROVEMENT` to require a larger fractional gain, such
 as `0.01` for 1%.
 
+For models that run `llama-perplexity`, the same gate also protects quality:
+the PR score must include PPL, and it must be no more than 20% worse than the
+best PPL currently recorded for that model. Set
+`LEADERBOARD_MAX_PPL_REGRESSION` to adjust that fractional limit.
+
 After a PR is merged, the main-branch board run credits leaderboard entries to
 the merged commit's author. If GitHub can map that author to a user, the
 leaderboard uses the GitHub login; otherwise it falls back to the raw git author
