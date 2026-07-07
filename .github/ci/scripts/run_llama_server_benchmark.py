@@ -298,7 +298,7 @@ def score_common(model: str, variant: str, note: str = "") -> dict[str, Any]:
         "note": note,
         "sha": os.environ.get("GITHUB_SHA", "local"),
         "ref": os.environ.get("GITHUB_REF", "local"),
-        "team": os.environ.get("GITHUB_ACTOR", "local"),
+        "team": os.environ.get("LEADERBOARD_TEAM") or os.environ.get("GITHUB_ACTOR", "local"),
         "run_url": run_url(),
         "scored_at": datetime.now(timezone.utc).isoformat(),
     }

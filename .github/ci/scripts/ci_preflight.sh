@@ -70,6 +70,19 @@ if python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "
 fi
 rm -rf "$tmp"
 
+step "Leaderboard team resolver"
+expected_author="$(git show -s --format=%an HEAD)"
+resolved_push="$(GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main GITHUB_ACTOR=ci-actor GH_TOKEN= GITHUB_TOKEN= \
+  .github/ci/scripts/resolve_leaderboard_team.sh HEAD)"
+if [[ "$resolved_push" != "$expected_author" ]]; then
+  bad "resolve_leaderboard_team.sh push fallback returned '$resolved_push', expected '$expected_author'"
+fi
+resolved_pr="$(GITHUB_EVENT_NAME=pull_request GITHUB_REF=refs/pull/1/merge GITHUB_ACTOR=ci-actor GH_TOKEN= GITHUB_TOKEN= \
+  .github/ci/scripts/resolve_leaderboard_team.sh HEAD)"
+if [[ "$resolved_pr" != "ci-actor" ]]; then
+  bad "resolve_leaderboard_team.sh PR fallback returned '$resolved_pr'"
+fi
+
 step "Selector runs against merge-base (if available)"
 base="$(git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD 2>/dev/null || true)"
 if [[ -n "$base" ]]; then

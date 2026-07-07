@@ -30,8 +30,10 @@ GENERIC_BOARD_INFRA_PATHS = {
     ".github/workflows/benchmark-board.yml",
     ".github/ci/scripts/benchmark_config_helpers.py",
     ".github/ci/scripts/changed_benchmark_models.py",
+    ".github/ci/scripts/resolve_leaderboard_team.sh",
     ".github/ci/scripts/run_model_benchmark.sh",
     ".github/ci/scripts/score_results.py",
+    ".github/ci/platform/deploy/soc3-benchmark.sh",
 }
 
 RUNNER_INFRA_PATHS = {
@@ -314,9 +316,9 @@ def main() -> int:
         default="affected",
         help=(
             "affected: shared infra/workflow/global-config changes fan out to all "
-            "default models (use on push to main). "
+            "default models (use for broad validation). "
             "changed: select only models whose own files or vendored framework "
-            "source changed — i.e. the models the PR is pushing (use on PRs)."
+            "source changed — i.e. the models a PR or main push is submitting."
         ),
     )
     parser.add_argument(

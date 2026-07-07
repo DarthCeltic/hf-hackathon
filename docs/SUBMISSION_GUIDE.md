@@ -41,8 +41,10 @@ Need help? Ask in Discord `#Lab`: <https://discord.gg/CbSA2umxf6>
 9. Open the GitHub PR.
 
 PR board CI selects the configured models touched by the diff and comments with
-the ET-SoC1 board result. External fork PRs reach the board runner only after
-GitHub's external-contributor workflow approval gate releases the run.
+the ET-SoC1 board result. After merge, the main-branch board run uses the same
+touched-model selection when updating leaderboard data. External fork PRs reach
+the board runner only after GitHub's external-contributor workflow approval gate
+releases the run.
 
 The `Leaderboard gate` check is the merge signal for benchmarked submissions.
 Every selected model must produce a passing board score and strictly improve the
@@ -52,3 +54,8 @@ configured model with no prior leaderboard entry can pass by producing its first
 valid board score. Set the optional repository variable
 `LEADERBOARD_MIN_RELATIVE_IMPROVEMENT` to require a larger fractional gain, such
 as `0.01` for 1%.
+
+After a PR is merged, the main-branch board run credits leaderboard entries to
+the merged commit's author. If GitHub can map that author to a user, the
+leaderboard uses the GitHub login; otherwise it falls back to the raw git author
+name.

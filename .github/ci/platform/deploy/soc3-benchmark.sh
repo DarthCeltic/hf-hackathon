@@ -93,6 +93,9 @@ fi
 if [[ -n "${GITHUB_ACTOR:-}" ]]; then
   REMOTE_ENV+=("GITHUB_ACTOR=$(printf "%q" "${GITHUB_ACTOR}")")
 fi
+if [[ -n "${LEADERBOARD_TEAM:-}" ]]; then
+  REMOTE_ENV+=("LEADERBOARD_TEAM=$(printf "%q" "${LEADERBOARD_TEAM}")")
+fi
 if [[ -n "${GITHUB_SERVER_URL:-}" ]]; then
   REMOTE_ENV+=("GITHUB_SERVER_URL=$(printf "%q" "${GITHUB_SERVER_URL}")")
 fi
