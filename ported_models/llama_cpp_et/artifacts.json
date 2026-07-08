@@ -21,7 +21,9 @@
       "kind": "framework_workdir",
       "framework": "llama.cpp-et",
       "env": "LLAMA_CPP_ET_WORKDIR",
-      "env_aliases": ["LFM25_LLAMA_WORKDIR"],
+      "env_aliases": [
+        "LFM25_LLAMA_WORKDIR"
+      ],
       "local_cache": "local-artifacts/frameworks/llama.cpp-et/build-et",
       "build": {
         "cmake": "cmake",
@@ -30,7 +32,10 @@
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_CXX_STANDARD_LIBRARIES=-lglog"
         ],
-        "build_args": ["--config", "Release"]
+        "build_args": [
+          "--config",
+          "Release"
+        ]
       },
       "note": "Out-of-tree CMake build of the committed llama_cpp_source submodule. Decoupled from the source path so the submodule working tree stays clean."
     },
@@ -38,7 +43,9 @@
       "kind": "framework_binary",
       "framework": "llama.cpp-et",
       "env": "LLAMA_CPP_ET_SERVER",
-      "env_aliases": ["LFM25_LLAMA_SERVER"],
+      "env_aliases": [
+        "LFM25_LLAMA_SERVER"
+      ],
       "relative_to": "llama_cpp_build",
       "relative_path": "bin/llama-server"
     },
@@ -46,7 +53,9 @@
       "kind": "framework_binary",
       "framework": "llama.cpp-et",
       "env": "LLAMA_CPP_ET_PERPLEXITY",
-      "env_aliases": ["LFM25_LLAMA_PERPLEXITY"],
+      "env_aliases": [
+        "LFM25_LLAMA_PERPLEXITY"
+      ],
       "relative_to": "llama_cpp_build",
       "relative_path": "bin/llama-perplexity"
     },
@@ -346,6 +355,42 @@
       "sha256": "068a721e47419ccfc94b6420118f772478544e1a0d4fad7118212774b3f9ba9e",
       "size_bytes": 1894532416,
       "note": "DeepSeek R1 Distill Qwen 1.5B GGUF model."
+    },
+    "smolvlm_256m_q8_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "SmolVLM-256M-Instruct-Q8_0",
+      "filename": "SmolVLM-256M-Instruct-Q8_0.gguf",
+      "env": "SMOLVLM_256M_MODEL_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "ggml-org/SmolVLM-256M-Instruct-GGUF",
+        "revision": "b9e4379657e1450d04d02eec8e345667265b0a00",
+        "filename": "SmolVLM-256M-Instruct-Q8_0.gguf",
+        "url": "https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/b9e4379657e1450d04d02eec8e345667265b0a00/SmolVLM-256M-Instruct-Q8_0.gguf"
+      },
+      "local_cache": "local-artifacts/models/smolvlm_256m/SmolVLM-256M-Instruct-Q8_0.gguf",
+      "sha256": "2a31195d3769c0b0fd0a4906201666108834848db768af11de1d2cef7cd35e65",
+      "size_bytes": 175054528,
+      "note": "SmolVLM 256M LLM Q8_0 (Idefics3 arch). LLM backbone is SmolLM2-135M-Instruct (already ported). Requires mmproj for vision."
+    },
+    "smolvlm_256m_mmproj_q8": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "SmolVLM-256M-mmproj-Q8_0",
+      "filename": "mmproj-SmolVLM-256M-Instruct-Q8_0.gguf",
+      "env": "SMOLVLM_256M_MMPROJ_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "ggml-org/SmolVLM-256M-Instruct-GGUF",
+        "revision": "b9e4379657e1450d04d02eec8e345667265b0a00",
+        "filename": "mmproj-SmolVLM-256M-Instruct-Q8_0.gguf",
+        "url": "https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/b9e4379657e1450d04d02eec8e345667265b0a00/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf"
+      },
+      "local_cache": "local-artifacts/models/smolvlm_256m/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf",
+      "sha256": "7e943f7c53f0382a6fc41b6ee0c2def63ba4fded9ab8ed039cc9e2ab905e0edd",
+      "size_bytes": 103769856,
+      "note": "SmolVLM 256M vision projector (SigLIP ~93M + MLP). Q8_0 quantized. Must be loaded alongside smolvlm_256m_q8_gguf."
     }
   }
 }
