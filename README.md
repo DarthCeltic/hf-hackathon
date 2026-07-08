@@ -30,6 +30,7 @@ Results are from real ET-SoC1 silicon via the main-branch board workflow. Each m
 | gemma3n_e2b | AFOliveira | `gemma-3n-E2B-it-Q8_0` | Decode tokens/s | 1.50 | 32.83 (+/- 10.20) | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |
 | tinyllama11b | AFOliveira | `TinyLlama-1.1B-Chat-v1.0-Q8_0` | Decode tokens/s | 11.29 | 29.23 (+/- 7.70) | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |
 | rwkv7_15b | AFOliveira | `rwkv7-1.5B-world-q8_0` | Decode tokens/s | 3.65 | 16.46 (+/- 3.01) | [1bb9a0c](https://github.com/nekkoai/hf-hackathon/actions/runs/26504752353) |
+| qwen25_05b | Razvan-Mihai Hanghicel | `Qwen2.5-0.5B-Instruct-Q8_0` | Decode tokens/s | 11.37 | 16.97 (+/- 3.53) | [d3f9502](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28964644188) |
 | qwen3_8b | Ashish Soni | `Qwen3-8B-Q8_0` | Decode tokens/s | 3.30 | 10.50 (+/- 2.29) | [af95906](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28949135516) |
 | deepseek_r1_15b | alien1403 | `DeepSeek-R1-Distill-Qwen-1.5B-Q8_0` | Decode tokens/s | 7.91 | 47.36 (+/- 12.09) | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |
 
