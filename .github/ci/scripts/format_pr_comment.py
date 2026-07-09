@@ -52,6 +52,28 @@ def cell(text: str, limit: int = 100) -> str:
     return (flat[: limit - 1] + "…") if len(flat) > limit else flat
 
 
+def is_whisper_30s_audio_path(path: str) -> bool:
+    return path.startswith("ported_models/whisper/src/whisper_resident_")
+
+
+def is_yolo_image_set_path(path: str) -> bool:
+    return path.startswith("ported_models/yolo/src/")
+
+
+def uncovered_note(path: str) -> str:
+    if is_whisper_30s_audio_path(path):
+        return (
+            "resident Whisper source changed; no configured 30 s audio/transcript "
+            "benchmark covers it"
+        )
+    if is_yolo_image_set_path(path):
+        return (
+            "YOLO source changed; no configured fixed image-set output-tensor "
+            "benchmark covers it"
+        )
+    return "changed runtime source is not built by any configured benchmark row"
+
+
 def fmt_ppl(score: dict) -> str:
     value = score.get("perplexity")
     if value is None:
@@ -100,6 +122,11 @@ def main() -> int:
         default="",
         help="Space/comma-separated ported_models ports touched by the PR that have no benchmark_config.json entry.",
     )
+    parser.add_argument(
+        "--uncovered",
+        default="",
+        help="Space/comma-separated runtime source files touched by the PR that are not built by any benchmark row.",
+    )
     parser.add_argument("--title", default="ET-SoC1 sys-emu benchmark")
     parser.add_argument(
         "--footer",
@@ -111,6 +138,7 @@ def main() -> int:
     models = selected_model_names(args.target, args.models)
     scores = {m: load_score(scores_dir / f"score-{m}.json") for m in models}
     unregistered = [p for p in args.unregistered.replace(",", " ").split() if p]
+    uncovered = [p for p in args.uncovered.replace(",", " ").split() if p]
 
     lines = [
         f"## {args.title}",
@@ -157,6 +185,12 @@ def main() -> int:
             "new port; no benchmark_config.json entry |"
         )
 
+    for path in uncovered:
+        lines.append(
+            f"| {cell(path, limit=80)} | — | ⚠️ not benchmarked | — | — | — | "
+            f"{cell(uncovered_note(path))} |"
+        )
+
     passed = [m for m in models if scores.get(m) and scores[m].get("passed")]
     lines.append("")
     if passed:
@@ -177,6 +211,18 @@ def main() -> int:
             + ", ".join(f"`{p}`" for p in unregistered)
             + ". Add a `models` entry in `.github/ci/benchmark_config.json` "
             "(pointing at the port's `benchmark.json`) so CI benchmarks it."
+        )
+
+    if uncovered:
+        lines.append("")
+        lines.append(
+            "**Changed runtime source is not covered by an adequate benchmark row:** "
+            + ", ".join(f"`{p}`" for p in uncovered)
+            + ". Update the configured benchmark source, add a benchmark row for the new variant, "
+            "or keep the change out of the submission. Resident Whisper changes require a "
+            "30 s audio/transcript validation row, not just the compact transformer smoke benchmark. "
+            "YOLO changes require a fixed image-set output-tensor validation row, not just the "
+            "constant-output smoke benchmark."
         )
 
     lines.append("")

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import posixpath
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -52,6 +53,26 @@ MODEL_CODE_SUFFIXES = {
     ".py",
     ".json",
     ".txt",
+}
+
+RUNTIME_CODE_SUFFIXES = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".s",
+    ".S",
+}
+
+INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
+WHISPER_30S_AUDIO_VALIDATION = "whisper_30s_audio"
+YOLO_IMAGE_SET_VALIDATION = "yolo_image_set"
+WHISPER_TRANSCRIPT_ACCURACY_KINDS = {
+    "transcript",
+    "transcript_exact",
+    "wer",
+    "cer",
 }
 
 
@@ -205,6 +226,93 @@ def is_model_code_path(path: str) -> bool:
     return Path(path).suffix in MODEL_CODE_SUFFIXES
 
 
+def is_runtime_code_path(path: str) -> bool:
+    name = Path(path).name.lower()
+    if name in {"readme.md", "model.md", "third_party.md"}:
+        return False
+    if "/docs/" in path:
+        return False
+    return Path(path).suffix in RUNTIME_CODE_SUFFIXES
+
+
+def required_validation_for_path(path: str) -> str | None:
+    """Return an extra validation requirement for fidelity-sensitive paths.
+
+    The compact Whisper leaderboard row is a transformer-shaped smoke kernel.
+    Resident Whisper sources are the real audio path, so changes there should
+    only be considered covered by a benchmark row that exercises a 30 s audio
+    transcript/fidelity test.
+    """
+    path = norm(path)
+    name = Path(path).name
+    if is_under(path, "ported_models/whisper/src") and name.startswith("whisper_resident_"):
+        return WHISPER_30S_AUDIO_VALIDATION
+    if is_under(path, "ported_models/yolo/src"):
+        return YOLO_IMAGE_SET_VALIDATION
+    return None
+
+
+def model_satisfies_validation(model_cfg: dict[str, Any], requirement: str | None) -> bool:
+    if not requirement:
+        return True
+    if requirement == YOLO_IMAGE_SET_VALIDATION:
+        validation = model_cfg.get("validation", {})
+        accuracy = model_cfg.get("accuracy", {})
+        if not isinstance(validation, dict) or not isinstance(accuracy, dict):
+            return False
+        if validation.get("kind") != YOLO_IMAGE_SET_VALIDATION:
+            return False
+        try:
+            image_count = int(validation.get("image_count", 0))
+        except (TypeError, ValueError):
+            return False
+        if image_count < int(validation.get("min_image_count", 3)):
+            return False
+        if accuracy.get("kind") not in {"uint8_npy", "sha256"}:
+            return False
+        try:
+            if int(accuracy.get("image_count", image_count)) != image_count:
+                return False
+        except (TypeError, ValueError):
+            return False
+        if accuracy.get("kind") == "uint8_npy":
+            shape = accuracy.get("shape", [])
+            if not isinstance(shape, list) or not shape:
+                return False
+            try:
+                return int(shape[0]) == image_count
+            except (TypeError, ValueError):
+                return False
+        return True
+    if requirement != WHISPER_30S_AUDIO_VALIDATION:
+        return False
+
+    validations = []
+    validation = model_cfg.get("validation")
+    if isinstance(validation, dict):
+        validations.append(validation)
+    validation_tests = model_cfg.get("validation_tests", [])
+    if isinstance(validation_tests, list):
+        validations.extend(item for item in validation_tests if isinstance(item, dict))
+
+    for item in validations:
+        if item.get("kind") != WHISPER_30S_AUDIO_VALIDATION:
+            continue
+        try:
+            if float(item.get("audio_seconds", 0)) >= 30.0:
+                return True
+        except (TypeError, ValueError):
+            continue
+
+    accuracy = model_cfg.get("accuracy", {})
+    if isinstance(accuracy, dict) and accuracy.get("kind") in WHISPER_TRANSCRIPT_ACCURACY_KINDS:
+        try:
+            return float(accuracy.get("audio_seconds", 0)) >= 30.0
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
 def port_of(path: str) -> str | None:
     """Return the ``ported_models/<name>`` root for a path, if it is under one."""
     parts = norm(path).split("/")
@@ -246,6 +354,94 @@ def unregistered_ports(cfg: dict[str, Any], changed_files: list[str]) -> list[st
         if (REPO_ROOT / port / "artifacts.json").is_file():
             found.add(port)
     return sorted(name.split("/", 1)[1] for name in found)
+
+
+def local_includes(path: str, seen: set[str] | None = None) -> set[str]:
+    """Return a source file and repo-local quoted includes reachable from it."""
+    path = norm(path)
+    if seen is None:
+        seen = set()
+    if path in seen:
+        return set()
+    seen.add(path)
+
+    full_path = REPO_ROOT / path
+    if not full_path.is_file():
+        return {path}
+
+    covered = {path}
+    try:
+        text = full_path.read_text(errors="ignore")
+    except OSError:
+        return covered
+
+    parent = Path(path).parent
+    for include in INCLUDE_RE.findall(text):
+        include_path = norm(parent / include)
+        if not (REPO_ROOT / include_path).is_file():
+            continue
+        covered.update(local_includes(include_path, seen))
+    return covered
+
+
+def benchmark_runtime_coverage(model_cfg: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """Return exact files and directory roots that a configured benchmark builds."""
+    files: set[str] = set()
+    roots: set[str] = set()
+
+    source = repo_rel(model_cfg.get("source"))
+    if source:
+        files.update(local_includes(source))
+
+    artifacts = model_cfg.get("artifacts", {})
+    if isinstance(artifacts, dict):
+        for artifact in artifacts.values():
+            if not isinstance(artifact, dict):
+                continue
+            if artifact.get("kind") != "framework_source":
+                continue
+            source_path = repo_rel(artifact.get("submodule_path"))
+            if source_path:
+                roots.add(source_path)
+
+    return files, roots
+
+
+def benchmark_covers_path(
+    cfg: dict[str, Any],
+    target: str,
+    path: str,
+    required_validation: str | None = None,
+) -> bool:
+    for model, model_cfg in cfg.get("models", {}).items():
+        if not model_supports_target(cfg, model, target):
+            continue
+        files, roots = benchmark_runtime_coverage(model_cfg)
+        if path in files and model_satisfies_validation(model_cfg, required_validation):
+            return True
+        if any(is_under(path, root) for root in roots) and model_satisfies_validation(
+            model_cfg,
+            required_validation,
+        ):
+            return True
+    return False
+
+
+def uncovered_runtime_code_paths(cfg: dict[str, Any], changed_files: list[str], target: str) -> list[str]:
+    """Registered port runtime files changed by the PR but not built by any benchmark row."""
+    registered = registered_ports(cfg)
+    uncovered: set[str] = set()
+    for path in changed_files:
+        port = port_of(path)
+        if not port or port not in registered:
+            continue
+        if not is_runtime_code_path(path):
+            continue
+        required_validation = required_validation_for_path(path)
+        if benchmark_covers_path(cfg, target, path, required_validation):
+            continue
+        uncovered.add(path)
+    return sorted(uncovered)
 
 
 def select_from_benchmark_config(
@@ -325,6 +521,15 @@ def main() -> int:
         "--unregistered-out",
         default="",
         help="Write space-separated new ported_models ports lacking a benchmark_config.json entry to this file.",
+    )
+    parser.add_argument(
+        "--uncovered-out",
+        default="",
+        help=(
+            "Write space-separated changed runtime source files not covered by "
+            "an adequate benchmark row. Some paths have extra validation "
+            "requirements, e.g. resident Whisper needs a 30 s audio test."
+        ),
     )
     args = parser.parse_args()
     honor_global = args.scope == "affected"
@@ -420,10 +625,18 @@ def main() -> int:
     unregistered = unregistered_ports(cfg, changed_files)
     if args.unregistered_out:
         Path(args.unregistered_out).write_text(" ".join(unregistered))
+    uncovered = uncovered_runtime_code_paths(cfg, changed_files, args.target)
+    if args.uncovered_out:
+        Path(args.uncovered_out).write_text(" ".join(uncovered))
 
     print(
         "unregistered ports: "
         + (" ".join(unregistered) if unregistered else "(none)"),
+        file=sys.stderr,
+    )
+    print(
+        "uncovered or under-validated runtime code: "
+        + (" ".join(uncovered) if uncovered else "(none)"),
         file=sys.stderr,
     )
 

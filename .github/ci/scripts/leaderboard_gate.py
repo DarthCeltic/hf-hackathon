@@ -256,6 +256,30 @@ def cell(value: Any, limit: int = 120) -> str:
     return (flat[: limit - 1] + "...") if len(flat) > limit else flat
 
 
+def is_whisper_30s_audio_path(path: str) -> bool:
+    return path.startswith("ported_models/whisper/src/whisper_resident_")
+
+
+def is_yolo_image_set_path(path: str) -> bool:
+    return path.startswith("ported_models/yolo/src/")
+
+
+def uncovered_note(path: str) -> str:
+    if is_whisper_30s_audio_path(path):
+        return (
+            "Resident Whisper source changed, but no configured 30 s "
+            "audio/transcript benchmark covers it. The compact transformer "
+            "smoke row is not enough for Whisper fidelity changes."
+        )
+    if is_yolo_image_set_path(path):
+        return (
+            "YOLO source changed, but no configured fixed image-set output-tensor "
+            "benchmark covers it. The constant-output smoke row is not enough "
+            "for YOLO fidelity changes."
+        )
+    return "Changed runtime source is not built by any configured benchmark row. Add or update a benchmark row before merging."
+
+
 def write_markdown(path: str, lines: list[str]) -> None:
     text = "\n".join(lines) + "\n"
     if path:
@@ -268,6 +292,7 @@ def main() -> int:
     parser.add_argument("--scores-dir", required=True)
     parser.add_argument("--models", default="")
     parser.add_argument("--unregistered", default="")
+    parser.add_argument("--uncovered", default="")
     parser.add_argument("--target", choices=("all", "sysemu", "board"), default="board")
     parser.add_argument("--base-ref", default="")
     parser.add_argument("--output", default="")
@@ -288,6 +313,7 @@ def main() -> int:
     cfg = load_config(CONFIG_PATH)
     models = parse_model_selection(args.models, cfg, target=args.target) if args.models.strip() else []
     unregistered = split_items(args.unregistered)
+    uncovered = split_items(args.uncovered)
     scores_dir = Path(args.scores_dir)
     failed = False
 
@@ -298,14 +324,17 @@ def main() -> int:
             "Policy: every selected model must pass board CI and beat the current base-branch "
             "leaderboard value for its primary metric. Models with llama-perplexity enabled "
             f"must also stay within {args.max_ppl_regression:.0%} of the best seen PPL. "
-            "CI/scoring-only changes must pass board CI but do not need to improve runtime."
+            "CI/scoring-only changes must pass board CI but do not need to improve runtime. "
+            "Fidelity-sensitive paths need their model-specific validation row; resident "
+            "Whisper changes require a 30 s audio/transcript validation, and YOLO changes "
+            "require a fixed image-set output-tensor validation."
         ),
         "",
         "| Model | Metric | PR score | Current best | Verdict | Notes |",
         "|-------|--------|----------|--------------|---------|-------|",
     ]
 
-    if not models and not unregistered:
+    if not models and not unregistered and not uncovered:
         lines.append("| - | - | - | - | pass | No changed board leaderboard models were selected. |")
 
     files = changed_files(args.base_ref)
@@ -318,6 +347,12 @@ def main() -> int:
         failed = True
         lines.append(
             f"| {cell(port)} | - | - | - | fail | New port has no benchmark config entry, so it cannot be gated. |"
+        )
+
+    for path in uncovered:
+        failed = True
+        lines.append(
+            f"| {cell(path)} | - | - | - | fail | {cell(uncovered_note(path))} |"
         )
 
     for model in models:

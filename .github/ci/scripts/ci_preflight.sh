@@ -57,7 +57,8 @@ python3 .github/ci/scripts/benchmark_config_helpers.py --target sysemu --models 
 step "PR-comment formatter renders"
 tmp="$(mktemp -d)"
 python3 .github/ci/scripts/format_pr_comment.py --scores-dir "$tmp" --output "$tmp/c.md" \
-  --target board --models "" --unregistered "smoketest" --sha x --ref y >/dev/null \
+  --target board --models "" --unregistered "smoketest" \
+  --uncovered "ported_models/whisper/src/not_benchmarked.c" --sha x --ref y >/dev/null \
   || bad "format_pr_comment.py failed"
 
 step "Score results accuracy gates"
@@ -98,6 +99,15 @@ def dump_with_summary(size: int, fields: list[int], writes: list[tuple[int, byte
     for offset, payload in writes:
         data[offset:offset + len(payload)] = payload
     return bytes(data)
+
+
+def write_uint8_npy(path: Path, shape: tuple[int, ...], payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header_text = "{'descr': '|u1', 'fortran_order': False, 'shape': " + repr(shape) + ", }"
+    header_bytes = header_text.encode("latin1")
+    pad = (16 - ((10 + len(header_bytes) + 1) % 16)) % 16
+    header_bytes = header_bytes + b" " * pad + b"\n"
+    path.write_bytes(b"\x93NUMPY\x01\x00" + len(header_bytes).to_bytes(2, "little") + header_bytes + payload)
 
 
 def run_score(model: str, run_dir: Path, name: str) -> dict:
@@ -154,6 +164,40 @@ yolo_bad_score = run_score("yolo", write_results("yolo", "y10_00_base", bytes(yo
 assert yolo_good_score["passed"] and yolo_good_score["valid_accuracy"]
 assert not yolo_bad_score["passed"] and not yolo_bad_score["valid_accuracy"]
 
+yolo_set_ref = bytes((i * 37 + 11) & 0xff for i in range(4 * 80 * 80 * 16))
+write_uint8_npy(
+    assets / "yolo-bench" / "yolo_image_set_output_u8.npy",
+    (4, 80, 80, 16),
+    yolo_set_ref,
+)
+test_config["models"]["yolo"]["accuracy"] = {
+    "kind": "uint8_npy",
+    "image_count": 4,
+    "offset": "0x160000",
+    "reference_path": "yolo-bench/yolo_image_set_output_u8.npy",
+    "shape": [4, 80, 80, 16],
+    "max_abs": 0,
+}
+test_config_path.write_text(json.dumps(test_config) + "\n")
+yolo_set_fields = list(yolo_fields)
+yolo_set_fields[9] = yolo_set_fields[10] = sum(yolo_set_ref)
+yolo_set_good = dump_with_summary(0x160000 + len(yolo_set_ref), yolo_set_fields, [(0x160000, yolo_set_ref)])
+yolo_set_bad = bytearray(yolo_set_good)
+yolo_set_bad[0x160000 + 1024] ^= 1
+yolo_set_good_score = run_score(
+    "yolo",
+    write_results("yolo", "y10_00_base", yolo_set_good),
+    "yolo-set-good",
+)
+yolo_set_bad_score = run_score(
+    "yolo",
+    write_results("yolo", "y10_00_base", bytes(yolo_set_bad)),
+    "yolo-set-bad",
+)
+assert yolo_set_good_score["passed"] and yolo_set_good_score["valid_accuracy"]
+assert not yolo_set_bad_score["passed"] and not yolo_set_bad_score["valid_accuracy"]
+assert "uint8_npy" in yolo_set_good_score["valid_note"]
+
 whisper_expected = 2097152
 whisper_fields = [
     0x57485350, 1, 1, 256, 64, 256, 1, 1,
@@ -167,15 +211,47 @@ whisper_good_score = run_score("whisper", write_results("whisper", "w10_00_base"
 whisper_bad_score = run_score("whisper", write_results("whisper", "w10_00_base", whisper_bad), "whisper-bad")
 assert whisper_good_score["passed"] and whisper_good_score["valid_accuracy"]
 assert not whisper_bad_score["passed"] and not whisper_bad_score["valid_accuracy"]
+
+test_config["models"]["whisper"]["accuracy"] = {
+    "kind": "transcript_exact",
+    "audio_seconds": 30,
+    "offset": "0x1800",
+    "count": 256,
+    "expected_text": "And so my fellow Americans ask not what your country can do for you.",
+    "normalize": "whitespace",
+}
+test_config_path.write_text(json.dumps(test_config) + "\n")
+good_text = b" And so my fellow Americans ask not what your country can do for you." + bytes([0])
+bad_text = b" And so my fellow Americans ask what your country can do for you." + bytes([0])
+whisper_text_good = dump_with_summary(0x2200, whisper_fields, [(0x1800, good_text)])
+whisper_text_bad = dump_with_summary(0x2200, whisper_fields, [(0x1800, bad_text)])
+whisper_text_good_score = run_score(
+    "whisper",
+    write_results("whisper", "w10_00_base", whisper_text_good),
+    "whisper-text-good",
+)
+whisper_text_bad_score = run_score(
+    "whisper",
+    write_results("whisper", "w10_00_base", whisper_text_bad),
+    "whisper-text-bad",
+)
+assert whisper_text_good_score["passed"] and whisper_text_good_score["valid_accuracy"]
+assert not whisper_text_bad_score["passed"] and not whisper_text_bad_score["valid_accuracy"]
+assert "transcript_exact valid" in whisper_text_good_score["valid_note"]
+assert "transcript_exact failed" in whisper_text_bad_score["valid_note"]
 PY
 
 step "Leaderboard gate renders"
 python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-pass.md" \
-  --target board --models "" --unregistered "" --base-ref HEAD >/dev/null \
+  --target board --models "" --unregistered "" --uncovered "" --base-ref HEAD >/dev/null \
   || bad "leaderboard_gate.py no-op render failed"
 if python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-fail.md" \
   --target board --models "" --unregistered "smoketest" --base-ref HEAD >/dev/null; then
   bad "leaderboard_gate.py should fail unregistered ports"
+fi
+if python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-uncovered-fail.md" \
+  --target board --models "" --uncovered "ported_models/whisper/src/not_benchmarked.c" --base-ref HEAD >/dev/null; then
+  bad "leaderboard_gate.py should fail uncovered runtime source changes"
 fi
 python3 - "$tmp" <<'PY'
 import json
@@ -254,11 +330,117 @@ step "Selector runs against merge-base (if available)"
 base="$(git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD 2>/dev/null || true)"
 if [[ -n "$base" ]]; then
   python3 .github/ci/scripts/changed_benchmark_models.py --target board --base "$base" --head HEAD \
-    --format space --unregistered-out "$(mktemp)" >/dev/null \
+    --format space --unregistered-out "$(mktemp)" --uncovered-out "$(mktemp)" >/dev/null \
     || bad "changed_benchmark_models.py failed"
 else
   note "no merge-base found; skipping selector run"
 fi
+
+step "Selector detects uncovered runtime code"
+covered_out="$(mktemp)"
+python3 .github/ci/scripts/changed_benchmark_models.py --target board \
+  --changed-file ported_models/whisper/src/whisper_transformer_vpu_argbuf.c \
+  --format space --unregistered-out "$(mktemp)" --uncovered-out "$covered_out" >/dev/null \
+  || bad "changed_benchmark_models.py covered-source case failed"
+if [[ -s "$covered_out" ]]; then
+  bad "changed_benchmark_models.py marked configured Whisper benchmark source as uncovered"
+fi
+uncovered_out="$(mktemp)"
+python3 .github/ci/scripts/changed_benchmark_models.py --target board \
+  --changed-file ported_models/whisper/src/whisper_resident_encoder_argbuf.c \
+  --format space --unregistered-out "$(mktemp)" --uncovered-out "$uncovered_out" >/dev/null \
+  || bad "changed_benchmark_models.py uncovered-source case failed"
+if ! grep -qx 'ported_models/whisper/src/whisper_resident_encoder_argbuf.c' "$uncovered_out"; then
+  bad "changed_benchmark_models.py did not report unbenchmarked Whisper resident encoder source"
+fi
+
+tmp_cfg="$(mktemp)"
+python3 - "$tmp_cfg" <<'PY'
+import json, sys
+from pathlib import Path
+
+out = Path(sys.argv[1])
+cfg = json.loads(Path(".github/ci/benchmark_config.json").read_text())
+cfg["models"]["whisper"]["source"] = "ported_models/whisper/src/whisper_resident_encoder_argbuf.c"
+cfg["models"]["whisper"]["accuracy"] = {
+    "kind": "checksum",
+    "expected_output_sum": 2097152,
+}
+out.write_text(json.dumps(cfg))
+PY
+under_validated_out="$(mktemp)"
+python3 .github/ci/scripts/changed_benchmark_models.py --target board \
+  --config "$tmp_cfg" \
+  --changed-file ported_models/whisper/src/whisper_resident_encoder_argbuf.c \
+  --format space --unregistered-out "$(mktemp)" --uncovered-out "$under_validated_out" >/dev/null \
+  || bad "changed_benchmark_models.py under-validated Whisper case failed"
+if ! grep -qx 'ported_models/whisper/src/whisper_resident_encoder_argbuf.c' "$under_validated_out"; then
+  bad "changed_benchmark_models.py allowed resident Whisper without 30s audio validation"
+fi
+
+python3 - "$tmp_cfg" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+cfg = json.loads(path.read_text())
+cfg["models"]["whisper"]["validation"] = {
+    "kind": "whisper_30s_audio",
+    "audio_seconds": 30,
+}
+path.write_text(json.dumps(cfg))
+PY
+validated_out="$(mktemp)"
+python3 .github/ci/scripts/changed_benchmark_models.py --target board \
+  --config "$tmp_cfg" \
+  --changed-file ported_models/whisper/src/whisper_resident_encoder_argbuf.c \
+  --format space --unregistered-out "$(mktemp)" --uncovered-out "$validated_out" >/dev/null \
+  || bad "changed_benchmark_models.py 30s audio validation case failed"
+if [[ -s "$validated_out" ]]; then
+  bad "changed_benchmark_models.py rejected resident Whisper with 30s audio validation"
+fi
+
+yolo_unvalidated_out="$(mktemp)"
+python3 .github/ci/scripts/changed_benchmark_models.py --target board \
+  --changed-file ported_models/yolo/src/yolo_vpu_argbuf.c \
+  --format space --unregistered-out "$(mktemp)" --uncovered-out "$yolo_unvalidated_out" >/dev/null \
+  || bad "changed_benchmark_models.py under-validated YOLO case failed"
+if ! grep -qx 'ported_models/yolo/src/yolo_vpu_argbuf.c' "$yolo_unvalidated_out"; then
+  bad "changed_benchmark_models.py allowed YOLO source without image-set validation"
+fi
+
+yolo_cfg="$(mktemp)"
+python3 - "$yolo_cfg" <<'PY'
+import json, sys
+from pathlib import Path
+
+out = Path(sys.argv[1])
+cfg = json.loads(Path(".github/ci/benchmark_config.json").read_text())
+cfg["models"]["yolo"]["validation"] = {
+    "kind": "yolo_image_set",
+    "image_count": 4,
+}
+cfg["models"]["yolo"]["accuracy"] = {
+    "kind": "uint8_npy",
+    "image_count": 4,
+    "offset": "0x160000",
+    "reference_path": "yolo-bench/yolo_image_set_output_u8.npy",
+    "shape": [4, 80, 80, 16],
+    "max_abs": 0,
+}
+out.write_text(json.dumps(cfg))
+PY
+yolo_validated_out="$(mktemp)"
+python3 .github/ci/scripts/changed_benchmark_models.py --target board \
+  --config "$yolo_cfg" \
+  --changed-file ported_models/yolo/src/yolo_vpu_argbuf.c \
+  --format space --unregistered-out "$(mktemp)" --uncovered-out "$yolo_validated_out" >/dev/null \
+  || bad "changed_benchmark_models.py image-set YOLO validation case failed"
+if [[ -s "$yolo_validated_out" ]]; then
+  bad "changed_benchmark_models.py rejected YOLO with image-set validation"
+fi
+rm -f "$covered_out" "$uncovered_out" "$tmp_cfg" "$under_validated_out" "$validated_out" \
+  "$yolo_unvalidated_out" "$yolo_cfg" "$yolo_validated_out"
 
 if [[ "$fail" -ne 0 ]]; then
   printf '\npreflight FAILED — fix the above before pushing to CI.\n' >&2
