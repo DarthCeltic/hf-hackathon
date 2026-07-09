@@ -21,7 +21,6 @@ from benchmark_config_helpers import load_config as load_benchmark_config
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_PATH = REPO_ROOT / ".github" / "ci" / "benchmark_config.json"
 
-DNCNN_MAGIC = 0xD3C11003
 YOLO_MAGIC = 0x10500001
 SUMMARY = struct.Struct("<16I")
 YOLO_DETECTION = struct.Struct("<I5f")

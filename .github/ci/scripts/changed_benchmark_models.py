@@ -70,6 +70,7 @@ RUNTIME_CODE_SUFFIXES = {
 
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
 YOLO_REAL_IMAGE_DETECTIONS_VALIDATION = "yolo_real_image_detections"
+ZERO_BLOB_PRIMARY = "zero2m.bin"
 
 
 def norm(path: str | Path) -> str:
@@ -147,6 +148,29 @@ def json_changed_keys(old: dict[str, Any] | None, new: dict[str, Any], key: str)
     changed = {name for name, value in new_values.items() if old_values.get(name) != value}
     changed.update(name for name in old_values.keys() if name not in new_values)
     return changed
+
+
+def normalize_zero_blob_fallbacks(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: (
+                [ZERO_BLOB_PRIMARY]
+                if key == "paths"
+                and isinstance(nested, list)
+                and nested
+                and norm(str(nested[0])) == ZERO_BLOB_PRIMARY
+                else normalize_zero_blob_fallbacks(nested)
+            )
+            for key, nested in value.items()
+            if not (
+                key.startswith("requires_")
+                and key.endswith("_inputs")
+                and nested is False
+            )
+        }
+    if isinstance(value, list):
+        return [normalize_zero_blob_fallbacks(nested) for nested in value]
+    return value
 
 
 def collect_artifact_refs(value: Any) -> set[str]:
@@ -445,7 +469,9 @@ def select_from_benchmark_config(
     old_models = old.get("models", {}) if old else {}
     new_models = new.get("models", {})
     for model in configured_model_names(cfg, target, default_only=False):
-        if old_models.get(model) != new_models.get(model):
+        old_model = normalize_zero_blob_fallbacks(old_models.get(model))
+        new_model = normalize_zero_blob_fallbacks(new_models.get(model))
+        if old_model != new_model:
             selected.add(model)
     old_without_models = {k: v for k, v in (old or {}).items() if k != "models"}
     new_without_models = {k: v for k, v in new.items() if k != "models"}

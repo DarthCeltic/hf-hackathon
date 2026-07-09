@@ -68,7 +68,6 @@ import os
 import struct
 import subprocess
 import sys
-import hashlib
 from pathlib import Path
 
 root = Path.cwd()
@@ -143,22 +142,8 @@ def run_score(model: str, run_dir: Path, name: str) -> dict:
     return json.loads(out.read_text())
 
 
-dncnn_ref = bytes([7]) * (64 * 64)
 test_config = json.loads((root / ".github/ci/benchmark_config.json").read_text())
-test_config["models"]["dncnn"]["accuracy"]["expected_sha256"] = hashlib.sha256(dncnn_ref).hexdigest()
 test_config_path.write_text(json.dumps(test_config) + "\n")
-dncnn_fields = [
-    0xD3C11003, 1, 1, 64, 64, 16, 5, 1,
-    1, sum(dncnn_ref), sum(dncnn_ref), 1, 0, 0, 0, 0,
-]
-dncnn_good = dump_with_summary(0x12000, dncnn_fields, [(0x10000, dncnn_ref)])
-dncnn_bad = bytearray(dncnn_good)
-dncnn_bad[0x10000] = 9
-dncnn_good_score = run_score("dncnn", write_results("dncnn", "int8_tfma_8hart", dncnn_good), "dncnn-good")
-dncnn_bad_score = run_score("dncnn", write_results("dncnn", "int8_tfma_8hart", bytes(dncnn_bad)), "dncnn-bad")
-assert dncnn_good_score["passed"] and dncnn_good_score["valid_accuracy"]
-assert not dncnn_bad_score["passed"] and not dncnn_bad_score["valid_accuracy"]
-assert hashlib.sha256(dncnn_ref).hexdigest()[:12] in dncnn_good_score["valid_note"]
 
 yolo_cases = test_config["models"]["yolo"]["benchmark_cases"]
 yolo_det_offset = int(yolo_cases[0]["accuracy"]["offset"], 0)
@@ -269,9 +254,9 @@ from pathlib import Path
 import sys
 
 tmp = Path(sys.argv[1])
-baseline = json.loads(Path("data/dncnn.json").read_text())["entries"][0]
+baseline = json.loads(Path("data/yolo.json").read_text())["entries"][0]
 score = {
-    "model": "dncnn",
+    "model": "yolo",
     "variant": baseline["variant"],
     "status": "pass",
     "passed": True,
@@ -280,10 +265,10 @@ score = {
     "valid_accuracy": True,
     "valid_note": "dump valid; accuracy valid",
 }
-(tmp / "score-dncnn.json").write_text(json.dumps(score) + "\n")
+(tmp / "score-yolo.json").write_text(json.dumps(score) + "\n")
 PY
 python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-ci-only-pass.md" \
-  --target board --models "dncnn" --base-ref HEAD >/dev/null \
+  --target board --models "yolo" --base-ref HEAD >/dev/null \
   || bad "leaderboard_gate.py should allow non-submission CI/scoring-only changes without runtime improvement"
 rm -rf "$tmp"
 
@@ -385,6 +370,39 @@ if [[ -s "$yolo_validated_out" ]]; then
   bad "changed_benchmark_models.py rejected YOLO with real-image detection validation"
 fi
 rm -f "$covered_out" "$yolo_unvalidated_cfg" "$yolo_unvalidated_out" "$yolo_cfg" "$yolo_validated_out"
+
+step "Selector ignores zero-blob fallback path cleanup"
+python3 - <<'PY' || bad "changed_benchmark_models.py zero-blob fallback normalization failed"
+import importlib.util
+import sys
+from pathlib import Path
+
+path = Path(".github/ci/scripts/changed_benchmark_models.py")
+sys.path.insert(0, str(path.parent))
+spec = importlib.util.spec_from_file_location("changed_benchmark_models", path)
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+
+old = {
+    "file_loads": [
+        {"address": "0x0", "paths": ["zero2m.bin", "legacy/zero2m.bin"], "required": True},
+        {"address": "0x1000", "paths": ["weights.bin", "fallback/weights.bin"], "required": True},
+    ],
+    "requires_removed_inputs": False,
+}
+new = {
+    "file_loads": [
+        {"address": "0x0", "paths": ["zero2m.bin", "common/zero2m.bin"], "required": True},
+        {"address": "0x1000", "paths": ["weights.bin", "different/weights.bin"], "required": True},
+    ],
+}
+normalized_old = mod.normalize_zero_blob_fallbacks(old)
+normalized_new = mod.normalize_zero_blob_fallbacks(new)
+assert normalized_old["file_loads"][0] == normalized_new["file_loads"][0]
+assert normalized_old["file_loads"][1] != normalized_new["file_loads"][1]
+assert "requires_removed_inputs" not in normalized_old
+PY
 
 if [[ "$fail" -ne 0 ]]; then
   printf '\npreflight FAILED — fix the above before pushing to CI.\n' >&2
