@@ -70,7 +70,6 @@ RUNTIME_CODE_SUFFIXES = {
 
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
 WHISPER_30S_AUDIO_VALIDATION = "whisper_30s_audio"
-YOLO_IMAGE_SET_VALIDATION = "yolo_image_set"
 YOLO_REAL_IMAGE_DETECTIONS_VALIDATION = "yolo_real_image_detections"
 WHISPER_TRANSCRIPT_ACCURACY_KINDS = {
     "transcript",
@@ -273,44 +272,13 @@ def required_validation_for_path(path: str) -> str | None:
     name = Path(path).name
     if is_under(path, "ported_models/whisper/src") and name.startswith("whisper_resident_"):
         return WHISPER_30S_AUDIO_VALIDATION
-    if is_under(path, "ported_models/yolo_e2e/src"):
-        return YOLO_REAL_IMAGE_DETECTIONS_VALIDATION
     if is_under(path, "ported_models/yolo/src"):
-        return YOLO_IMAGE_SET_VALIDATION
+        return YOLO_REAL_IMAGE_DETECTIONS_VALIDATION
     return None
 
 
 def model_satisfies_validation(model_cfg: dict[str, Any], requirement: str | None) -> bool:
     if not requirement:
-        return True
-    if requirement == YOLO_IMAGE_SET_VALIDATION:
-        validation = model_cfg.get("validation", {})
-        accuracy = model_cfg.get("accuracy", {})
-        if not isinstance(validation, dict) or not isinstance(accuracy, dict):
-            return False
-        if validation.get("kind") != YOLO_IMAGE_SET_VALIDATION:
-            return False
-        try:
-            image_count = int(validation.get("image_count", 0))
-        except (TypeError, ValueError):
-            return False
-        if image_count < int(validation.get("min_image_count", 3)):
-            return False
-        if accuracy.get("kind") not in {"uint8_npy", "sha256"}:
-            return False
-        try:
-            if int(accuracy.get("image_count", image_count)) != image_count:
-                return False
-        except (TypeError, ValueError):
-            return False
-        if accuracy.get("kind") == "uint8_npy":
-            shape = accuracy.get("shape", [])
-            if not isinstance(shape, list) or not shape:
-                return False
-            try:
-                return int(shape[0]) == image_count
-            except (TypeError, ValueError):
-                return False
         return True
     if requirement == YOLO_REAL_IMAGE_DETECTIONS_VALIDATION:
         validation = model_cfg.get("validation", {})

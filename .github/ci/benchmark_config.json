@@ -18,11 +18,10 @@
       },
       "yolo": {
         "defines": [
-          "-DYOLO_PASSES=1",
-          "-DYOLO_IMAGE_COUNT=4",
-          "-DYOLO_PRELOADED_INPUTS=1",
+          "-funroll-loops",
+          "-fno-tree-loop-distribute-patterns",
           "-DNUM_HARTS=16",
-          "-DACTIVE_HARTS=8",
+          "-DACTIVE_HARTS=8u",
           "-DBENCH_THREAD0_ONLY=1"
         ]
       },
@@ -50,9 +49,11 @@
       },
       "yolo": {
         "defines": [
-          "-DYOLO_PASSES=1",
-          "-DYOLO_IMAGE_COUNT=4",
-          "-DYOLO_PRELOADED_INPUTS=1"
+          "-funroll-loops",
+          "-fno-tree-loop-distribute-patterns",
+          "-DNUM_HARTS=16",
+          "-DACTIVE_HARTS=8u",
+          "-DBENCH_THREAD0_ONLY=1"
         ]
       },
       "whisper": {
@@ -113,70 +114,15 @@
       "requires_dncnn_inputs": true
     },
     "yolo": {
-      "canonical_variant": "y10_00_base",
-      "source": "ported_models/yolo/src/yolo_vpu_argbuf.c",
+      "canonical_variant": "yolo_m30",
+      "source": "ported_models/yolo/src/yolo_m30_argbuf.c",
       "bench_dir": "yolo-bench",
-      "manifest": "yolo_10_variants.txt",
-      "full_manifest": "yolo_100_variants.txt",
-      "score": {
-        "metric": "kernel_wait_per_image_s",
-        "label": "Kernel wait/image",
-        "higher_is_better": false
-      },
-      "build": {
-        "opt": "-O3",
-        "defines": [
-          "-DYOLO_PASSES=1",
-          "-DYOLO_IMAGE_COUNT=4",
-          "-DYOLO_PRELOADED_INPUTS=1"
-        ]
-      },
-      "file_loads": [
-        {
-          "address": "0x0",
-          "paths": [
-            "zero2m.bin",
-            "dncnn3-bench/zero2m.bin"
-          ],
-          "required": true
-        },
-        {
-          "address": "0x4000",
-          "paths": ["yolo-bench/yolo_image_set_input_f32.bin"],
-          "required": true
-        },
-        {
-          "address": "0x200000",
-          "paths": ["yolo-bench/yolo_image_set_weights_f32.bin"],
-          "required": true
-        }
-      ],
-      "dump_magic": "0x10500001",
-      "dump_size": "0x364000",
-      "validation": {
-        "kind": "yolo_image_set",
-        "image_count": 4
-      },
-      "accuracy": {
-        "kind": "uint8_npy",
-        "image_count": 4,
-        "offset": "0x300000",
-        "reference_path": "yolo-bench/yolo_image_set_output_u8.npy",
-        "shape": [4, 80, 80, 16],
-        "max_abs": 0
-      },
-      "requires_dncnn_inputs": false
-    },
-    "yolo_e2e": {
-      "canonical_variant": "yolo_e2e_m30",
-      "source": "ported_models/yolo_e2e/src/yolo_e2e_m30_argbuf.c",
-      "bench_dir": "yolo-e2e-bench",
-      "manifest": "yolo_e2e_variants.txt",
-      "benchmark_default": false,
+      "manifest": "yolo_variants.txt",
       "score": {
         "metric": "kernel_wait_s",
         "label": "End-to-end latency",
-        "higher_is_better": false
+        "higher_is_better": false,
+        "baseline_variant": "yolo_m30"
       },
       "build": {
         "opt": "-O3",
@@ -201,12 +147,12 @@
         },
         {
           "address": "0x02000000",
-          "paths": ["yolo-e2e/weights_region.bin"],
+          "paths": ["yolo/weights_region.bin"],
           "required": true
         },
         {
           "address": "0x04A00000",
-          "paths": ["yolo-e2e/web_car_raw_480x640x3_uint8_rgb.bin"],
+          "paths": ["yolo/web_car_raw_480x640x3_uint8_rgb.bin"],
           "required": true
         }
       ],

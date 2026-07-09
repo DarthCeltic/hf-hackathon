@@ -200,6 +200,13 @@ def metric_config(cfg: dict[str, Any], model: str) -> tuple[str, str, bool]:
     return str(metric), str(label), higher
 
 
+def baseline_variant(cfg: dict[str, Any], model: str) -> str | None:
+    model_cfg = cfg.get("models", {}).get(model, {})
+    score_cfg = model_cfg.get("score", {})
+    variant = score_cfg.get("baseline_variant")
+    return str(variant) if variant else None
+
+
 def load_json_from_ref(path: str, base_ref: str) -> Any | None:
     if base_ref:
         proc = subprocess.run(
@@ -284,12 +291,8 @@ def is_whisper_30s_audio_path(path: str) -> bool:
     return path.startswith("ported_models/whisper/src/whisper_resident_")
 
 
-def is_yolo_image_set_path(path: str) -> bool:
+def is_yolo_real_image_path(path: str) -> bool:
     return path.startswith("ported_models/yolo/src/")
-
-
-def is_yolo_e2e_path(path: str) -> bool:
-    return path.startswith("ported_models/yolo_e2e/src/")
 
 
 def uncovered_note(path: str) -> str:
@@ -299,15 +302,9 @@ def uncovered_note(path: str) -> str:
             "audio/transcript benchmark covers it. The compact transformer "
             "smoke row is not enough for Whisper fidelity changes."
         )
-    if is_yolo_image_set_path(path):
+    if is_yolo_real_image_path(path):
         return (
-            "YOLO source changed, but no configured fixed image-set output-tensor "
-            "benchmark covers it. The constant-output smoke row is not enough "
-            "for YOLO fidelity changes."
-        )
-    if is_yolo_e2e_path(path):
-        return (
-            "YOLO end-to-end source changed, but no configured real-image "
+            "YOLO source changed, but no configured real-image "
             "detection benchmark covers it. The gate must validate expected "
             "categories on a fixed image."
         )
@@ -361,8 +358,7 @@ def main() -> int:
             "CI/scoring-only changes must pass board CI but do not need to improve runtime. "
             "Fidelity-sensitive paths need their model-specific validation row; resident "
             "Whisper changes require a 30 s audio/transcript validation, and YOLO changes "
-            "require either the fixed image-set output-tensor validation or the real-image "
-            "detection validation, depending on the port."
+            "require real-image detection validation."
         ),
         "",
         "| Model | Metric | PR score | Current best | Verdict | Notes |",
@@ -394,6 +390,9 @@ def main() -> int:
         metric, label, higher = metric_config(cfg, model)
         score_path = scores_dir / f"score-{model}.json"
         entries = leaderboard_entries(model, args.base_ref)
+        required_variant = baseline_variant(cfg, model)
+        if required_variant:
+            entries = [entry for entry in entries if entry.get("variant") == required_variant]
         baseline = best_entry(entries, metric, higher)
         baseline_value = float(baseline[metric]) if baseline else None
         baseline_text = fmt_metric(baseline_value, metric)

@@ -100,6 +100,12 @@ def cell_text(text: str, limit: int = 80) -> str:
     return (flat[: limit - 1] + "...") if len(flat) > limit else flat
 
 
+def with_metrics(metrics: dict, **updates) -> dict:
+    merged = dict(metrics)
+    merged.update(updates)
+    return merged
+
+
 def load_uint8_npy(path: Path) -> tuple[tuple[int, ...], bytes]:
     data = path.read_bytes()
     if not data.startswith(b"\x93NUMPY"):
@@ -228,7 +234,7 @@ def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: d
             actual = int(summary.get("output_sum", -1))
             ok = actual == expected
             note = f"accuracy checksum {'valid' if ok else 'failed'} output_sum={actual} expected={expected}"
-            return ok, note, metrics | {"valid_accuracy": ok}
+            return ok, note, with_metrics(metrics, valid_accuracy=ok)
 
         if kind == "sha256":
             if dump_path is None or not dump_path.is_file():
@@ -242,7 +248,7 @@ def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: d
                 f"accuracy sha256 {'valid' if ok else 'failed'} "
                 f"actual={actual[:12]} expected={expected[:12]}"
             )
-            return ok, note, metrics | {"valid_accuracy": ok}
+            return ok, note, with_metrics(metrics, valid_accuracy=ok)
 
         if kind == "constant_u8":
             if dump_path is None or not dump_path.is_file():
@@ -259,11 +265,12 @@ def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: d
                 f"accuracy {'valid' if ok else 'failed'} constant_u8 "
                 f"max_abs={max_abs} mean_abs={mean_abs:.6f} gate={max_allowed}"
             )
-            return ok, note, metrics | {
-                "valid_accuracy": ok,
-                "accuracy_max_abs": max_abs,
-                "accuracy_mean_abs": mean_abs,
-            }
+            return ok, note, with_metrics(
+                metrics,
+                valid_accuracy=ok,
+                accuracy_max_abs=max_abs,
+                accuracy_mean_abs=mean_abs,
+            )
 
         if kind == "uint8_npy":
             if dump_path is None or not dump_path.is_file():
@@ -290,12 +297,13 @@ def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: d
                 f"accuracy {'valid' if ok else 'failed'} uint8_npy "
                 f"max_abs={max_abs} mean_abs={mean_abs:.6f} gate={max_allowed}"
             )
-            return ok, note, metrics | {
-                "valid_accuracy": ok,
-                "accuracy_max_abs": max_abs,
-                "accuracy_mean_abs": mean_abs,
-                "accuracy_reference": rel,
-            }
+            return ok, note, with_metrics(
+                metrics,
+                valid_accuracy=ok,
+                accuracy_max_abs=max_abs,
+                accuracy_mean_abs=mean_abs,
+                accuracy_reference=rel,
+            )
 
         if kind == "yolo_detections":
             if dump_path is None or not dump_path.is_file():
@@ -368,12 +376,13 @@ def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: d
             )
             max_abs = max(box_abs_values) if box_abs_values else None
             mean_abs = sum(box_abs_values) / len(box_abs_values) if box_abs_values else None
-            return ok, note, metrics | {
-                "valid_accuracy": ok,
-                "accuracy_max_abs": max_abs,
-                "accuracy_mean_abs": mean_abs,
-                "accuracy_reference": acfg.get("reference"),
-            }
+            return ok, note, with_metrics(
+                metrics,
+                valid_accuracy=ok,
+                accuracy_max_abs=max_abs,
+                accuracy_mean_abs=mean_abs,
+                accuracy_reference=acfg.get("reference"),
+            )
 
         if kind in ("transcript", "transcript_exact"):
             if dump_path is None or not dump_path.is_file():
@@ -412,12 +421,13 @@ def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: d
                 f"accuracy transcript_exact {'valid' if ok else 'failed'} "
                 f"actual={actual_preview!r} expected={expected_preview!r}"
             )
-            return ok, note, metrics | {
-                "valid_accuracy": ok,
-                "accuracy_reference": expected_ref,
-                "accuracy_text": actual_norm,
-                "accuracy_expected_text": expected_norm,
-            }
+            return ok, note, with_metrics(
+                metrics,
+                valid_accuracy=ok,
+                accuracy_reference=expected_ref,
+                accuracy_text=actual_norm,
+                accuracy_expected_text=expected_norm,
+            )
 
         return False, f"accuracy check failed: unknown kind {kind}", metrics
     except Exception as exc:

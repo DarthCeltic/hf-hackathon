@@ -2,8 +2,8 @@
 
 The benchmark loads:
 
-- `yolo-e2e/weights_region.bin` at `0x02000000`
-- `yolo-e2e/web_car_raw_480x640x3_uint8_rgb.bin` at `0x04A00000`
+- `yolo/weights_region.bin` at `0x02000000`
+- `yolo/web_car_raw_480x640x3_uint8_rgb.bin` at `0x04A00000`
 
 The kernel writes detections at `0x01D00000`:
 

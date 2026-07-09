@@ -31,6 +31,14 @@ def metric_config(model: str) -> tuple[str, bool]:
     return metric, higher
 
 
+def baseline_variant(model: str) -> str | None:
+    cfg = load_config(CONFIG_PATH)
+    model_cfg = cfg.get("models", {}).get(model, {})
+    score_cfg = model_cfg.get("score", {})
+    variant = score_cfg.get("baseline_variant")
+    return str(variant) if variant else None
+
+
 def selected_models(value: str | None) -> list[str]:
     names = configured_models()
     if not value:
@@ -52,7 +60,11 @@ def load_board(model: str) -> list:
     if not path.is_file():
         return []
     data = json.loads(path.read_text())
-    return data if isinstance(data, list) else data.get("entries", [])
+    entries = data if isinstance(data, list) else data.get("entries", [])
+    required_variant = baseline_variant(model)
+    if required_variant:
+        entries = [entry for entry in entries if entry.get("variant") == required_variant]
+    return entries
 
 
 def save_board(model: str, entries: list) -> None:

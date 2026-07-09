@@ -101,15 +101,6 @@ def dump_with_summary(size: int, fields: list[int], writes: list[tuple[int, byte
     return bytes(data)
 
 
-def write_uint8_npy(path: Path, shape: tuple[int, ...], payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    header_text = "{'descr': '|u1', 'fortran_order': False, 'shape': " + repr(shape) + ", }"
-    header_bytes = header_text.encode("latin1")
-    pad = (16 - ((10 + len(header_bytes) + 1) % 16)) % 16
-    header_bytes = header_bytes + b" " * pad + b"\n"
-    path.write_bytes(b"\x93NUMPY\x01\x00" + len(header_bytes).to_bytes(2, "little") + header_bytes + payload)
-
-
 def run_score(model: str, run_dir: Path, name: str) -> dict:
     out = scores / f"{name}.json"
     env = os.environ.copy()
@@ -151,28 +142,8 @@ assert dncnn_good_score["passed"] and dncnn_good_score["valid_accuracy"]
 assert not dncnn_bad_score["passed"] and not dncnn_bad_score["valid_accuracy"]
 assert hashlib.sha256(dncnn_ref).hexdigest()[:12] in dncnn_good_score["valid_note"]
 
-yolo_payload = bytes((i * 37 + 11) & 0xff for i in range(4 * 80 * 80 * 16))
-write_uint8_npy(
-    assets / "yolo-bench" / "yolo_image_set_output_u8.npy",
-    (4, 80, 80, 16),
-    yolo_payload,
-)
+yolo_det_offset = int(test_config["models"]["yolo"]["accuracy"]["offset"], 0)
 yolo_fields = [
-    0x10500001, 1, 1, 80, 80, 16, 4, 1,
-    1, sum(yolo_payload), sum(yolo_payload), 1, 0, 16, 0, 0,
-]
-yolo_good = dump_with_summary(0x300000 + len(yolo_payload), yolo_fields, [(0x300000, yolo_payload)])
-yolo_bad = bytearray(yolo_good)
-yolo_bad[0x300000 + 17] ^= 1
-yolo_good_score = run_score("yolo", write_results("yolo", "y10_00_base", yolo_good), "yolo-good")
-yolo_bad_score = run_score("yolo", write_results("yolo", "y10_00_base", bytes(yolo_bad)), "yolo-bad")
-assert yolo_good_score["passed"] and yolo_good_score["valid_accuracy"]
-assert not yolo_bad_score["passed"] and not yolo_bad_score["valid_accuracy"]
-assert "uint8_npy" in yolo_good_score["valid_note"]
-assert yolo_good_score["kernel_wait_per_image_s"] == 0.0025
-
-yolo_det_offset = int(test_config["models"]["yolo_e2e"]["accuracy"]["offset"], 0)
-yolo_e2e_fields = [
     0x10500001, 1, 1, 480, 640, 3, 1, 1,
     1, 0, 0, 1, 0, 0, 0, 0,
 ]
@@ -187,7 +158,7 @@ def yolo_detection_payload(detections):
 
 yolo_det_good = dump_with_summary(
     yolo_det_offset + 4096,
-    yolo_e2e_fields,
+    yolo_fields,
     [
         (
             yolo_det_offset,
@@ -202,7 +173,7 @@ yolo_det_good = dump_with_summary(
 )
 yolo_det_bad = dump_with_summary(
     yolo_det_offset + 4096,
-    yolo_e2e_fields,
+    yolo_fields,
     [
         (
             yolo_det_offset,
@@ -216,14 +187,14 @@ yolo_det_bad = dump_with_summary(
     ],
 )
 yolo_det_good_score = run_score(
-    "yolo_e2e",
-    write_results("yolo_e2e", "yolo_e2e_m30", yolo_det_good),
-    "yolo-e2e-good",
+    "yolo",
+    write_results("yolo", "yolo_m30", yolo_det_good),
+    "yolo-good",
 )
 yolo_det_bad_score = run_score(
-    "yolo_e2e",
-    write_results("yolo_e2e", "yolo_e2e_m30", yolo_det_bad),
-    "yolo-e2e-bad",
+    "yolo",
+    write_results("yolo", "yolo_m30", yolo_det_bad),
+    "yolo-bad",
 )
 assert yolo_det_good_score["passed"] and yolo_det_good_score["valid_accuracy"]
 assert not yolo_det_bad_score["passed"] and not yolo_det_bad_score["valid_accuracy"]
@@ -327,22 +298,21 @@ from pathlib import Path
 import sys
 
 tmp = Path(sys.argv[1])
-baseline = json.loads(Path("data/yolo.json").read_text())["entries"][0]
+baseline = json.loads(Path("data/dncnn.json").read_text())["entries"][0]
 score = {
-    "model": "yolo",
+    "model": "dncnn",
     "variant": baseline["variant"],
     "status": "pass",
     "passed": True,
     "kernel_wait_s": baseline["kernel_wait_s"] + 1.0,
-    "kernel_wait_per_image_s": 0.01,
     "valid_dump": True,
     "valid_accuracy": True,
     "valid_note": "dump valid; accuracy valid",
 }
-(tmp / "score-yolo.json").write_text(json.dumps(score) + "\n")
+(tmp / "score-dncnn.json").write_text(json.dumps(score) + "\n")
 PY
 python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-ci-only-pass.md" \
-  --target board --models "yolo" --base-ref HEAD >/dev/null \
+  --target board --models "dncnn" --base-ref HEAD >/dev/null \
   || bad "leaderboard_gate.py should allow non-submission CI/scoring-only changes without runtime improvement"
 rm -rf "$tmp"
 
@@ -453,11 +423,11 @@ PY
 yolo_unvalidated_out="$(mktemp)"
 python3 .github/ci/scripts/changed_benchmark_models.py --target board \
   --config "$yolo_unvalidated_cfg" \
-  --changed-file ported_models/yolo/src/yolo_vpu_argbuf.c \
+  --changed-file ported_models/yolo/src/yolo_m30_argbuf.c \
   --format space --unregistered-out "$(mktemp)" --uncovered-out "$yolo_unvalidated_out" >/dev/null \
   || bad "changed_benchmark_models.py under-validated YOLO case failed"
-if ! grep -qx 'ported_models/yolo/src/yolo_vpu_argbuf.c' "$yolo_unvalidated_out"; then
-  bad "changed_benchmark_models.py allowed YOLO source without image-set validation"
+if ! grep -qx 'ported_models/yolo/src/yolo_m30_argbuf.c' "$yolo_unvalidated_out"; then
+  bad "changed_benchmark_models.py allowed YOLO source without real-image detection validation"
 fi
 
 yolo_cfg="$(mktemp)"
@@ -468,27 +438,34 @@ from pathlib import Path
 out = Path(sys.argv[1])
 cfg = json.loads(Path(".github/ci/benchmark_config.json").read_text())
 cfg["models"]["yolo"]["validation"] = {
-    "kind": "yolo_image_set",
-    "image_count": 4,
+    "kind": "yolo_real_image_detections",
+    "image": "web_car",
+    "source_shape": [480, 640, 3],
 }
 cfg["models"]["yolo"]["accuracy"] = {
-    "kind": "uint8_npy",
-    "image_count": 4,
-    "offset": "0x300000",
-    "reference_path": "yolo-bench/yolo_image_set_output_u8.npy",
-    "shape": [4, 80, 80, 16],
-    "max_abs": 0,
+    "kind": "yolo_detections",
+    "offset": "0x01D00000",
+    "max_detections": 64,
+    "expected": [
+        {
+            "class_id": 2,
+            "label": "car",
+            "min_score": 0.55,
+            "box": [4.6, 56.0, 505.5, 273.6],
+            "min_iou": 0.70,
+        }
+    ],
 }
 out.write_text(json.dumps(cfg))
 PY
 yolo_validated_out="$(mktemp)"
 python3 .github/ci/scripts/changed_benchmark_models.py --target board \
   --config "$yolo_cfg" \
-  --changed-file ported_models/yolo/src/yolo_vpu_argbuf.c \
+  --changed-file ported_models/yolo/src/yolo_m30_argbuf.c \
   --format space --unregistered-out "$(mktemp)" --uncovered-out "$yolo_validated_out" >/dev/null \
-  || bad "changed_benchmark_models.py image-set YOLO validation case failed"
+  || bad "changed_benchmark_models.py real-image YOLO validation case failed"
 if [[ -s "$yolo_validated_out" ]]; then
-  bad "changed_benchmark_models.py rejected YOLO with image-set validation"
+  bad "changed_benchmark_models.py rejected YOLO with real-image detection validation"
 fi
 rm -f "$covered_out" "$uncovered_out" "$tmp_cfg" "$under_validated_out" "$validated_out" \
   "$yolo_unvalidated_cfg" "$yolo_unvalidated_out" "$yolo_cfg" "$yolo_validated_out"

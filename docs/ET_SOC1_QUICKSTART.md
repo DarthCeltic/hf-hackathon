@@ -176,7 +176,7 @@ scripts/run_sysemu_model_ports.sh \
   --launcher "$LOCAL_ARGBUF" \
   --suite smoke \
   --model yolo,whisper \
-  --variant y10_00_base,w10_00_base \
+  --variant yolo_m30,w10_00_base \
   --list
 ```
 
@@ -187,7 +187,7 @@ scripts/run_sysemu_model_ports.sh \
   --launcher "$LOCAL_ARGBUF" \
   --suite smoke \
   --model yolo,whisper \
-  --variant y10_00_base,w10_00_base \
+  --variant yolo_m30,w10_00_base \
   --timeout 1800 \
   --launcher-timeout 1800
 ```
@@ -247,11 +247,15 @@ rsync -aq \
 YOLO example:
 
 ```bash
-ssh "$BOARD_SSH" "mkdir -p '$REMOTE_MODELS/yolo-bench'"
+ssh "$BOARD_SSH" "mkdir -p '$REMOTE_MODELS/yolo-bench' '$REMOTE_MODELS/yolo'"
 rsync -aq \
-  "$BENCHMARK_ARTIFACT_ROOT/yolo-bench"/y10_*.elf \
-  "$BENCHMARK_ARTIFACT_ROOT/yolo-bench/yolo_10_variants.txt" \
+  "$BENCHMARK_ARTIFACT_ROOT/yolo-bench/yolo_m30.elf" \
+  "$BENCHMARK_ARTIFACT_ROOT/yolo-bench/yolo_variants.txt" \
   "$BOARD_SSH:$REMOTE_MODELS/yolo-bench/"
+rsync -aq \
+  "$BENCHMARK_ARTIFACT_ROOT/yolo/weights_region.bin" \
+  "$BENCHMARK_ARTIFACT_ROOT/yolo/web_car_raw_480x640x3_uint8_rgb.bin" \
+  "$BOARD_SSH:$REMOTE_MODELS/yolo/"
 ```
 
 DnCNN example:
@@ -286,12 +290,14 @@ export LD_LIBRARY_PATH='$REMOTE_ROOT:$REMOTE_MODELS:'\"\${LD_LIBRARY_PATH:-}\"
 cd '$REMOTE_MODELS/yolo-bench'
 STAMP=\$(date +%Y%m%d-%H%M%S)
 '$REMOTE_MODELS/erbium_soc1sim_argbuf' \
-    --elf-load ./y10_00_base.elf \
+    --elf-load ./yolo_m30.elf \
     --shire 0 \
     --file_load 0x0,../zero2m.bin \
-    --dump_after dump_yolo_y10_00_base_\$STAMP.bin \
+    --file_load 0x02000000,../yolo/weights_region.bin \
+    --file_load 0x04A00000,../yolo/web_car_raw_480x640x3_uint8_rgb.bin \
+    --dump_after dump_yolo_m30_\$STAMP.bin \
     --timeout 240 \
-  2>&1 | tee run_yolo_y10_00_base_\$STAMP.log
+  2>&1 | tee run_yolo_m30_\$STAMP.log
 "
 ```
 
@@ -346,11 +352,13 @@ while read -r variant; do
       --elf-load ./\"\$variant\".elf \
       --shire 0 \
       --file_load 0x0,../zero2m.bin \
+      --file_load 0x02000000,../yolo/weights_region.bin \
+      --file_load 0x04A00000,../yolo/web_car_raw_480x640x3_uint8_rgb.bin \
       --dump_after dump_\"\$variant\"_\"\$STAMP\".bin \
       --timeout 240 \
     > run_\"\$variant\"_\"\$STAMP\".log 2>&1
   grep 'Kernel wait seconds' run_\"\$variant\"_\"\$STAMP\".log || true
-done < yolo_10_variants.txt
+done < yolo_variants.txt
 "
 ```
 
