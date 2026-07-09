@@ -8,6 +8,7 @@
 #define YOLO_COMMON_H
 
 #include <stdint.h>
+#include "erbium/isa/atomic.h"
 #include "erbium/isa/hart.h"
 #include "erbium/isa/cacheops-umode.h"
 #include "erbium/isa/utils.h"
@@ -208,10 +209,36 @@ static void maxpool_fp32(const float *in, float *out,
 #define MH_T1_MASK    0u
 #define MH_TOTAL      ACTIVE_HARTS
 #define MH_NUM_T0     ACTIVE_HARTS
+#define MH_BARRIER_OFFSET 0x8000u
+struct mh_barrier_state {
+    uint32_t count;
+    uint32_t epoch;
+    uint32_t reserved[14];
+};
+static volatile struct mh_barrier_state *g_mh_barrier;
 static inline int      mh_is_active_hart(uint32_t hid) { (void)hid; return get_thread_id() == 0u && get_minion_id() < ACTIVE_HARTS; }
 static inline uint32_t mh_t0_idx(uint32_t hid) { (void)hid; return get_minion_id(); }
 static inline int      mh_is_t0(uint32_t hid) { return mh_is_active_hart(hid); }
 static inline int      mh_is_leader(uint32_t hid) { (void)hid; return get_thread_id() == 0u && get_minion_id() == 0u; }
+static inline void     mh_init_barrier(uint8_t *base) { g_mh_barrier = (volatile struct mh_barrier_state *)(base + MH_BARRIER_OFFSET); }
+static inline void     mh_atomic_barrier(void)
+{
+    if (ACTIVE_HARTS <= 1u) return;
+    volatile struct mh_barrier_state *const barrier = g_mh_barrier;
+    const uint32_t epoch = atomic_load_local_32(&barrier->epoch);
+    const uint32_t prior = atomic_add_local_32(&barrier->count, 1u);
+
+    if (prior + 1u == ACTIVE_HARTS) {
+        atomic_store_local_32(&barrier->count, 0u);
+        FENCE;
+        atomic_add_local_32(&barrier->epoch, 1u);
+    } else {
+        while (atomic_load_local_32(&barrier->epoch) == epoch) {
+            FENCE;
+        }
+    }
+    FENCE;
+}
 #elif YOLO_RESERVE_MINION0
 #define MH_T0_MASK    0xFEu
 #define MH_T1_MASK    0xFEu
@@ -234,12 +261,20 @@ static inline int      mh_is_t0 (uint32_t hid) { return (hid & 1u) == 0u; }
 
 #ifndef BENCH_THREAD0_ONLY
 static inline int      mh_is_leader(uint32_t hid) { return hid == MH_LEADER_HART; }
+static inline void     mh_init_barrier(uint8_t *base) { (void)base; }
 #endif
 
+#ifdef BENCH_THREAD0_ONLY
+#define MH_BARRIER() do { \
+    FENCE; WAIT_CACHEOPS; \
+    mh_atomic_barrier(); \
+} while (0)
+#else
 #define MH_BARRIER() do { \
     FENCE; WAIT_CACHEOPS; \
     (void)shire_barrier(MH_FLB, FCC_0, MH_TOTAL, MH_T0_MASK, MH_T1_MASK); \
 } while (0)
+#endif
 
 /* Convenience macros: auto-barrier after each multi-hart conv. */
 #define CONV_MH(...)    do { conv2d_fp32_mh(hid, __VA_ARGS__);    MH_BARRIER(); } while (0)
