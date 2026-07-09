@@ -391,6 +391,186 @@
       "sha256": "7e943f7c53f0382a6fc41b6ee0c2def63ba4fded9ab8ed039cc9e2ab905e0edd",
       "size_bytes": 103769856,
       "note": "SmolVLM 256M vision projector (SigLIP ~93M + MLP). Q8_0 quantized. Must be loaded alongside smolvlm_256m_q8_gguf."
+    },
+    "embeddinggemma_300m_gguf_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "embeddinggemma-300M-GGUF-Q8_0",
+      "filename": "embeddinggemma-300M-Q8_0.gguf",
+      "env": "EMBEDDINGGEMMA_300M_GGUF_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "ggml-org/embeddinggemma-300M-GGUF",
+        "revision": "main",
+        "filename": "embeddinggemma-300M-Q8_0.gguf",
+        "url": "https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf"
+      },
+      "sha256": "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63",
+      "size": 333590944,
+      "local_cache": "local-artifacts/models/embeddinggemma-300M-Q8_0.gguf",
+      "board_path": "/data/models/embeddinggemma-300M-Q8_0.gguf"
+    },
+    "gemma_3_1b_it_glm_47_flash_heretic_uncensored_thinking_gguf_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking_GGUF-Q8_0",
+      "filename": "Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking_Q8_0.gguf",
+      "env": "GEMMA_3_1B_IT_GLM_47_FLASH_HERETIC_UNCENSORED_THINKING_GGUF_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "Andycurrent/Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking_GGUF",
+        "revision": "main",
+        "filename": "Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking_Q8_0.gguf",
+        "url": "https://huggingface.co/Andycurrent/Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking_GGUF/resolve/main/Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking_Q8_0.gguf"
+      },
+      "sha256": "f8bb055bcb4041682b6488370a9567c668c43877b450c7a54ea7c8f6c49ce662",
+      "size": 1069307488,
+      "local_cache": "local-artifacts/models/Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking_Q8_0.gguf",
+      "board_path": "/data/models/Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking_Q8_0.gguf"
+    },
+    "gemma_4_26b_a4b_it_gguf_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "gemma-4-26B-A4B-it-GGUF-Q8_0",
+      "filename": "MTP/mtp-gemma-4-26B-A4B-it-Q8_0.gguf",
+      "env": "GEMMA_4_26B_A4B_IT_GGUF_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "unsloth/gemma-4-26B-A4B-it-GGUF",
+        "revision": "main",
+        "filename": "MTP/mtp-gemma-4-26B-A4B-it-Q8_0.gguf",
+        "url": "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/MTP/mtp-gemma-4-26B-A4B-it-Q8_0.gguf"
+      },
+      "sha256": "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b",
+      "size": 461766816,
+      "local_cache": "local-artifacts/models/MTP/mtp-gemma-4-26B-A4B-it-Q8_0.gguf",
+      "board_path": "/data/models/MTP/mtp-gemma-4-26B-A4B-it-Q8_0.gguf"
+    },
+    "gemma_4_26b_a4b_it_qat_gguf_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "gemma-4-26B-A4B-it-qat-GGUF-Q8_0",
+      "filename": "MTP/mtp-gemma-4-26B-A4B-it-Q8_0.gguf",
+      "env": "GEMMA_4_26B_A4B_IT_QAT_GGUF_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "unsloth/gemma-4-26B-A4B-it-qat-GGUF",
+        "revision": "main",
+        "filename": "MTP/mtp-gemma-4-26B-A4B-it-Q8_0.gguf",
+        "url": "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/resolve/main/MTP/mtp-gemma-4-26B-A4B-it-Q8_0.gguf"
+      },
+      "sha256": "0d960344481e41bcb11117d9a88401db4f184bbaada9551df96012458ece04f7",
+      "size": 461784000,
+      "local_cache": "local-artifacts/models/MTP/mtp-gemma-4-26B-A4B-it-Q8_0.gguf",
+      "board_path": "/data/models/MTP/mtp-gemma-4-26B-A4B-it-Q8_0.gguf"
+    },
+    "gemma_4_12b_it_gguf_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "gemma-4-12b-it-GGUF-Q8_0",
+      "filename": "MTP/mtp-gemma-4-12b-it-Q8_0.gguf",
+      "env": "GEMMA_4_12B_IT_GGUF_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "unsloth/gemma-4-12b-it-GGUF",
+        "revision": "main",
+        "filename": "MTP/mtp-gemma-4-12b-it-Q8_0.gguf",
+        "url": "https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/resolve/main/MTP/mtp-gemma-4-12b-it-Q8_0.gguf"
+      },
+      "sha256": "145db9094bc0f85f1701e255a2ed216dcc9800fc8bc8631ad00905b456bd451b",
+      "size": 465109248,
+      "local_cache": "local-artifacts/models/MTP/mtp-gemma-4-12b-it-Q8_0.gguf",
+      "board_path": "/data/models/MTP/mtp-gemma-4-12b-it-Q8_0.gguf"
+    },
+    "qwen3_vl_2b_instruct_gguf_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "Qwen3-VL-2B-Instruct-GGUF-Q8_0",
+      "filename": "Qwen3-VL-2B-Instruct-Q8_0.gguf",
+      "env": "QWEN3_VL_2B_INSTRUCT_GGUF_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "unsloth/Qwen3-VL-2B-Instruct-GGUF",
+        "revision": "main",
+        "filename": "Qwen3-VL-2B-Instruct-Q8_0.gguf",
+        "url": "https://huggingface.co/unsloth/Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen3-VL-2B-Instruct-Q8_0.gguf"
+      },
+      "sha256": "6b10b387ce3406788b501699ccb131c12c3550211ee2dbe06dc741d77d8bd9d0",
+      "size": 1834428096,
+      "local_cache": "local-artifacts/models/Qwen3-VL-2B-Instruct-Q8_0.gguf",
+      "board_path": "/data/models/Qwen3-VL-2B-Instruct-Q8_0.gguf"
+    },
+    "models_moved_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "models-moved-Q8_0",
+      "filename": "phi-2/ggml-model-q8_0.gguf",
+      "env": "MODELS_MOVED_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "ggml-org/models-moved",
+        "revision": "main",
+        "filename": "phi-2/ggml-model-q8_0.gguf",
+        "url": "https://huggingface.co/ggml-org/models-moved/resolve/main/phi-2/ggml-model-q8_0.gguf"
+      },
+      "sha256": "26a44c5a2bc22f33a1271cdf1accb689028141a6cb12e97671740a9803d23c63",
+      "size": 2958032736,
+      "local_cache": "local-artifacts/models/phi-2/ggml-model-q8_0.gguf",
+      "board_path": "/data/models/phi-2/ggml-model-q8_0.gguf"
+    },
+    "gemma_4_e4b_it_gguf_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "gemma-4-E4B-it-GGUF-Q8_0",
+      "filename": "MTP/mtp-gemma-4-E4B-it-Q8_0.gguf",
+      "env": "GEMMA_4_E4B_IT_GGUF_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "unsloth/gemma-4-E4B-it-GGUF",
+        "revision": "main",
+        "filename": "MTP/mtp-gemma-4-E4B-it-Q8_0.gguf",
+        "url": "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/MTP/mtp-gemma-4-E4B-it-Q8_0.gguf"
+      },
+      "sha256": "b6a723115efa510d3b3215db1e26790dae84cd08c2134a764f3d194f1f0c3376",
+      "size": 98653248,
+      "local_cache": "local-artifacts/models/MTP/mtp-gemma-4-E4B-it-Q8_0.gguf",
+      "board_path": "/data/models/MTP/mtp-gemma-4-E4B-it-Q8_0.gguf"
+    },
+    "gemma_4_31b_it_gguf_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "gemma-4-31B-it-GGUF-Q8_0",
+      "filename": "MTP/mtp-gemma-4-31B-it-Q8_0.gguf",
+      "env": "GEMMA_4_31B_IT_GGUF_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "unsloth/gemma-4-31B-it-GGUF",
+        "revision": "main",
+        "filename": "MTP/mtp-gemma-4-31B-it-Q8_0.gguf",
+        "url": "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/main/MTP/mtp-gemma-4-31B-it-Q8_0.gguf"
+      },
+      "sha256": "5ae8b0117bed601e8924c6305bd5b0585de361d51f0e77091bcb4252cf1f27de",
+      "size": 514687104,
+      "local_cache": "local-artifacts/models/MTP/mtp-gemma-4-31B-it-Q8_0.gguf",
+      "board_path": "/data/models/MTP/mtp-gemma-4-31B-it-Q8_0.gguf"
+    },
+    "llama_32_1b_instruct_q8_0_gguf_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "Llama-3.2-1B-Instruct-Q8_0-GGUF-Q8_0",
+      "filename": "llama-3.2-1b-instruct-q8_0.gguf",
+      "env": "LLAMA_32_1B_INSTRUCT_Q8_0_GGUF_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "hugging-quants/Llama-3.2-1B-Instruct-Q8_0-GGUF",
+        "revision": "main",
+        "filename": "llama-3.2-1b-instruct-q8_0.gguf",
+        "url": "https://huggingface.co/hugging-quants/Llama-3.2-1B-Instruct-Q8_0-GGUF/resolve/main/llama-3.2-1b-instruct-q8_0.gguf"
+      },
+      "sha256": "ba345c83bf5cc679c653b853c46517eea5a34f03ed2205449db77184d9ae62a9",
+      "size": 1321079200,
+      "local_cache": "local-artifacts/models/llama-3.2-1b-instruct-q8_0.gguf",
+      "board_path": "/data/models/llama-3.2-1b-instruct-q8_0.gguf"
     }
   }
 }
