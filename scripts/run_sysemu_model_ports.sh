@@ -127,6 +127,7 @@ fi
 
 job_suite=()
 job_model=()
+job_case=()
 job_variant=()
 job_elf=()
 job_loads=()
@@ -135,15 +136,30 @@ job_dump=()
 
 common_loads() {
   local model="$1"
-  python3 - "$CHECKOUT" "$BENCHMARK_CONFIG" "$model" "$ARTIFACTS" <<'PY'
+  local case_name="${2:-}"
+  python3 - "$CHECKOUT" "$BENCHMARK_CONFIG" "$model" "$ARTIFACTS" "$case_name" <<'PY'
 import sys
 
-repo, cfg_path, model, amp = sys.argv[1:5]
+repo, cfg_path, model, amp, case_name = sys.argv[1:6]
 sys.path.insert(0, f"{repo}/.github/ci/scripts")
 from benchmark_config_helpers import load_config, resolve_file_loads
 
-loads, _ = resolve_file_loads(load_config(cfg_path), model, amp)
+loads, _ = resolve_file_loads(load_config(cfg_path), model, amp, case_name or None)
 print("|".join(f"{item['address']},{item['path']}" for item in loads))
+PY
+}
+
+model_cases() {
+  local model="$1"
+  python3 - "$CHECKOUT" "$BENCHMARK_CONFIG" "$model" <<'PY'
+import sys
+
+repo, cfg_path, model = sys.argv[1:4]
+sys.path.insert(0, f"{repo}/.github/ci/scripts")
+from benchmark_config_helpers import load_config, model_benchmark_cases
+
+for case in model_benchmark_cases(load_config(cfg_path), model):
+    print(case["name"])
 PY
 }
 
@@ -161,8 +177,22 @@ print(int(value, 0) if isinstance(value, str) else int(value))
 PY
 }
 
+model_mem_size() {
+  local model="$1"
+  python3 - "$CHECKOUT" "$BENCHMARK_CONFIG" "$model" <<'PY'
+import sys
+
+repo, cfg_path, model = sys.argv[1:4]
+sys.path.insert(0, f"{repo}/.github/ci/scripts")
+from benchmark_config_helpers import load_config
+
+value = load_config(cfg_path)["models"][model].get("mem_size", 16 * 1024 * 1024)
+print(int(value, 0) if isinstance(value, str) else int(value))
+PY
+}
+
 add_job() {
-  local suite="$1" model="$2" variant="$3" elf="$4"
+  local suite="$1" model="$2" variant="$3" elf="$4" case_name="${5:-}"
   if [[ ${#selected_models[@]} -gt 0 ]] && ! contains_line "$model" "${selected_models[@]}"; then
     return
   fi
@@ -171,10 +201,11 @@ add_job() {
   fi
   job_suite+=("$suite")
   job_model+=("$model")
+  job_case+=("$case_name")
   job_variant+=("$variant")
   job_elf+=("$elf")
-  job_loads+=("$(common_loads "$model")")
-  job_mem+=("$((16 * 1024 * 1024))")
+  job_loads+=("$(common_loads "$model" "$case_name")")
+  job_mem+=("$(model_mem_size "$model")")
   job_dump+=("$(model_dump_size "$model")")
 }
 
@@ -187,7 +218,14 @@ read_variants() {
     variant="${variant%%#*}"
     variant="${variant//[[:space:]]/}"
     [[ -n "$variant" ]] || continue
-    add_job "$suite" "$model" "$variant" "$workdir/$variant.elf"
+    mapfile -t cases < <(model_cases "$model")
+    if [[ ${#cases[@]} -gt 0 ]]; then
+      for case_name in "${cases[@]}"; do
+        add_job "$suite" "$model" "$variant" "$workdir/$variant.elf" "$case_name"
+      done
+    else
+      add_job "$suite" "$model" "$variant" "$workdir/$variant.elf"
+    fi
   done < "$path"
 }
 
@@ -246,6 +284,7 @@ if [[ "$limit_per_model" -gt 0 ]]; then
   declare -A counts=()
   kept_suite=()
   kept_model=()
+  kept_case=()
   kept_variant=()
   kept_elf=()
   kept_loads=()
@@ -258,6 +297,7 @@ if [[ "$limit_per_model" -gt 0 ]]; then
     counts[$key]=$((count + 1))
     kept_suite+=("${job_suite[$i]}")
     kept_model+=("${job_model[$i]}")
+    kept_case+=("${job_case[$i]}")
     kept_variant+=("${job_variant[$i]}")
     kept_elf+=("${job_elf[$i]}")
     kept_loads+=("${job_loads[$i]}")
@@ -266,6 +306,7 @@ if [[ "$limit_per_model" -gt 0 ]]; then
   done
   job_suite=("${kept_suite[@]}")
   job_model=("${kept_model[@]}")
+  job_case=("${kept_case[@]}")
   job_variant=("${kept_variant[@]}")
   job_elf=("${kept_elf[@]}")
   job_loads=("${kept_loads[@]}")
@@ -281,14 +322,15 @@ missing_reasons() {
   while IFS= read -r reason; do
     [[ -n "$reason" ]] && reasons+=("$reason")
   done < <(
-    python3 - "$CHECKOUT" "$BENCHMARK_CONFIG" "${job_model[$i]}" "$ARTIFACTS" <<'PY'
+    python3 - "$CHECKOUT" "$BENCHMARK_CONFIG" "${job_model[$i]}" "$ARTIFACTS" "${job_case[$i]}" <<'PY'
 import sys
 
 repo, cfg_path, model, amp = sys.argv[1:5]
 sys.path.insert(0, f"{repo}/.github/ci/scripts")
 from benchmark_config_helpers import load_config, resolve_file_loads
 
-_, missing = resolve_file_loads(load_config(cfg_path), model, amp)
+case_name = sys.argv[5] if len(sys.argv) > 5 else ""
+_, missing = resolve_file_loads(load_config(cfg_path), model, amp, case_name or None)
 print("\n".join(missing))
 PY
   )
@@ -304,7 +346,7 @@ if [[ "$list_only" -eq 1 ]]; then
     mapfile -t reasons < <(missing_reasons "$i")
     state="OK"
     [[ ${#reasons[@]} -gt 0 ]] && state="MISSING"
-    echo -e "$((i + 1))\t$state\t${job_suite[$i]}\t${job_model[$i]}\t${job_variant[$i]}\t${job_elf[$i]}"
+    echo -e "$((i + 1))\t$state\t${job_suite[$i]}\t${job_model[$i]}\t${job_case[$i]}\t${job_variant[$i]}\t${job_elf[$i]}"
     for reason in "${reasons[@]}"; do
       echo -e "\t$reason"
     done
@@ -325,9 +367,9 @@ mkdir -p "$output_dir/jobs"
 
 manifest="$output_dir/manifest.tsv"
 {
-  echo -e "index\tsuite\tmodel\tvariant\telf\tfile_loads"
+  echo -e "index\tsuite\tmodel\tcase\tvariant\telf\tfile_loads"
   for i in "${!job_suite[@]}"; do
-    echo -e "$((i + 1))\t${job_suite[$i]}\t${job_model[$i]}\t${job_variant[$i]}\t${job_elf[$i]}\t${job_loads[$i]}"
+    echo -e "$((i + 1))\t${job_suite[$i]}\t${job_model[$i]}\t${job_case[$i]}\t${job_variant[$i]}\t${job_elf[$i]}\t${job_loads[$i]}"
   done
 } > "$manifest"
 
@@ -339,7 +381,7 @@ if [[ "$dry_run" -eq 1 ]]; then
 fi
 
 results="$output_dir/results.tsv"
-echo -e "index\tsuite\tmodel\tvariant\tstatus\trc\telapsed_s\tkernel_wait_s\temu_cycle_last\tlog\tdump\tnote" > "$results"
+echo -e "index\tsuite\tmodel\tcase\tvariant\tstatus\trc\telapsed_s\tkernel_wait_s\temu_cycle_last\tlog\tdump\tnote" > "$results"
 
 echo "Output dir: $output_dir"
 echo "Jobs: ${#job_suite[@]}"
@@ -348,17 +390,20 @@ fail_count=0
 for i in "${!job_suite[@]}"; do
   index=$((i + 1))
   safe_variant="$(printf '%s' "${job_variant[$i]}" | tr -c 'A-Za-z0-9_.-' '_')"
-  job_dir="$output_dir/jobs/$(printf '%04d_%s_%s_%s' "$index" "${job_suite[$i]}" "${job_model[$i]}" "$safe_variant")"
+  safe_case="$(printf '%s' "${job_case[$i]:-default}" | tr -c 'A-Za-z0-9_.-' '_')"
+  job_dir="$output_dir/jobs/$(printf '%04d_%s_%s_%s_%s' "$index" "${job_suite[$i]}" "${job_model[$i]}" "$safe_case" "$safe_variant")"
   mkdir -p "$job_dir"
   log="$job_dir/run.log"
   dump="$job_dir/dump.bin"
 
-  echo "[$index/${#job_suite[@]}] ${job_suite[$i]}/${job_model[$i]}/${job_variant[$i]}"
+  label="${job_suite[$i]}/${job_model[$i]}/${job_variant[$i]}"
+  [[ -n "${job_case[$i]}" ]] && label="${job_suite[$i]}/${job_model[$i]}/${job_case[$i]}/${job_variant[$i]}"
+  echo "[$index/${#job_suite[@]}] $label"
   mapfile -t reasons < <(missing_reasons "$i")
   if [[ ${#reasons[@]} -gt 0 ]]; then
     printf '%s\n' "${reasons[@]}" > "$log"
     note="$(IFS='; '; echo "${reasons[*]}")"
-    echo -e "$index\t${job_suite[$i]}\t${job_model[$i]}\t${job_variant[$i]}\tmissing\t\t0.000\t\t\t${log#$output_dir/}\t${dump#$output_dir/}\t$note" >> "$results"
+    echo -e "$index\t${job_suite[$i]}\t${job_model[$i]}\t${job_case[$i]}\t${job_variant[$i]}\tmissing\t\t0.000\t\t\t${log#$output_dir/}\t${dump#$output_dir/}\t$note" >> "$results"
     echo "  missing log=$log"
     fail_count=$((fail_count + 1))
     [[ "$keep_going" -eq 1 ]] || break
@@ -409,7 +454,7 @@ for i in "${!job_suite[@]}"; do
   cycle_value="$(grep -Eo 'DBG emu_cycle=[0-9]+' "$log" | tail -1 | sed 's/DBG emu_cycle=//')"
   dump_field=""
   [[ "$no_dump" -eq 0 ]] && dump_field="${dump#$output_dir/}"
-  echo -e "$index\t${job_suite[$i]}\t${job_model[$i]}\t${job_variant[$i]}\t$status\t$rc\t$elapsed.000\t$wait_value\t$cycle_value\t${log#$output_dir/}\t$dump_field\t" >> "$results"
+  echo -e "$index\t${job_suite[$i]}\t${job_model[$i]}\t${job_case[$i]}\t${job_variant[$i]}\t$status\t$rc\t$elapsed.000\t$wait_value\t$cycle_value\t${log#$output_dir/}\t$dump_field\t" >> "$results"
   echo "  $status rc=$rc elapsed=${elapsed}s wait=${wait_value:-NA} log=$log"
 
   if [[ "$status" != "pass" && "$keep_going" -ne 1 ]]; then

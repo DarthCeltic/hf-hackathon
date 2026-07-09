@@ -93,21 +93,30 @@ def write_results(model: str, variant: str, dump: bytes) -> Path:
     return run_dir
 
 
+def write_case_results(model: str, variant: str, case_dumps: list[tuple[str, bytes]]) -> Path:
+    run_dir = tmp / f"results-{model}-cases"
+    rows = [
+        "index\tsuite\tmodel\tcase\tvariant\tstatus\trc\telapsed_s\tkernel_wait_s\temu_cycle_last\tlog\tdump\tnote"
+    ]
+    for idx, (case, dump) in enumerate(case_dumps, start=1):
+        job = run_dir / "jobs" / f"{idx:04d}_smoke_{model}_{case}_{variant}"
+        job.mkdir(parents=True, exist_ok=True)
+        (job / "run.log").write_text("Kernel wait seconds: 0.010000\n")
+        (job / "dump.bin").write_bytes(dump)
+        rows.append(
+            f"{idx}\tsmoke\t{model}\t{case}\t{variant}\tpass\t0\t1.000\t0.010000\t\t"
+            f"{(job / 'run.log').relative_to(run_dir)}\t{(job / 'dump.bin').relative_to(run_dir)}\t"
+        )
+    (run_dir / "results.tsv").write_text("\n".join(rows) + "\n")
+    return run_dir
+
+
 def dump_with_summary(size: int, fields: list[int], writes: list[tuple[int, bytes]]) -> bytes:
     data = bytearray(size)
     data[0x1000:0x1000 + SUMMARY.size] = SUMMARY.pack(*fields)
     for offset, payload in writes:
         data[offset:offset + len(payload)] = payload
     return bytes(data)
-
-
-def write_uint8_npy(path: Path, shape: tuple[int, ...], payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    header_text = "{'descr': '|u1', 'fortran_order': False, 'shape': " + repr(shape) + ", }"
-    header_bytes = header_text.encode("latin1")
-    pad = (16 - ((10 + len(header_bytes) + 1) % 16)) % 16
-    header_bytes = header_bytes + b" " * pad + b"\n"
-    path.write_bytes(b"\x93NUMPY\x01\x00" + len(header_bytes).to_bytes(2, "little") + header_bytes + payload)
 
 
 def run_score(model: str, run_dir: Path, name: str) -> dict:
@@ -151,52 +160,58 @@ assert dncnn_good_score["passed"] and dncnn_good_score["valid_accuracy"]
 assert not dncnn_bad_score["passed"] and not dncnn_bad_score["valid_accuracy"]
 assert hashlib.sha256(dncnn_ref).hexdigest()[:12] in dncnn_good_score["valid_note"]
 
-yolo_payload = bytes([128]) * 102400
+yolo_cases = test_config["models"]["yolo"]["benchmark_cases"]
+yolo_det_offset = int(yolo_cases[0]["accuracy"]["offset"], 0)
 yolo_fields = [
-    0x10500001, 1, 1, 80, 80, 16, 4, 1,
-    1, sum(yolo_payload), sum(yolo_payload), 1, 0, 16, 0, 0,
+    0x10500001, 1, 1, 480, 640, 3, 1, 1,
+    1, 0, 0, 1, 0, 0, 0, 0,
 ]
-yolo_good = dump_with_summary(0x180000, yolo_fields, [(0x160000, yolo_payload)])
-yolo_bad = bytearray(yolo_good)
-yolo_bad[0x160000 + 17] = 127
-yolo_good_score = run_score("yolo", write_results("yolo", "y10_00_base", yolo_good), "yolo-good")
-yolo_bad_score = run_score("yolo", write_results("yolo", "y10_00_base", bytes(yolo_bad)), "yolo-bad")
-assert yolo_good_score["passed"] and yolo_good_score["valid_accuracy"]
-assert not yolo_bad_score["passed"] and not yolo_bad_score["valid_accuracy"]
 
-yolo_set_ref = bytes((i * 37 + 11) & 0xff for i in range(4 * 80 * 80 * 16))
-write_uint8_npy(
-    assets / "yolo-bench" / "yolo_image_set_output_u8.npy",
-    (4, 80, 80, 16),
-    yolo_set_ref,
-)
-test_config["models"]["yolo"]["accuracy"] = {
-    "kind": "uint8_npy",
-    "image_count": 4,
-    "offset": "0x160000",
-    "reference_path": "yolo-bench/yolo_image_set_output_u8.npy",
-    "shape": [4, 80, 80, 16],
-    "max_abs": 0,
-}
-test_config_path.write_text(json.dumps(test_config) + "\n")
-yolo_set_fields = list(yolo_fields)
-yolo_set_fields[9] = yolo_set_fields[10] = sum(yolo_set_ref)
-yolo_set_good = dump_with_summary(0x160000 + len(yolo_set_ref), yolo_set_fields, [(0x160000, yolo_set_ref)])
-yolo_set_bad = bytearray(yolo_set_good)
-yolo_set_bad[0x160000 + 1024] ^= 1
-yolo_set_good_score = run_score(
+
+def yolo_detection_payload(detections):
+    payload = struct.pack("<I", len(detections))
+    for det in detections:
+        payload += struct.pack("<I5f", *det)
+    return payload
+
+
+def yolo_case_dump(case, *, fail_first=False):
+    detections = []
+    for idx, exp in enumerate(case["accuracy"]["expected"]):
+        score = float(exp.get("min_score", 0.5)) + 0.10
+        class_id = int(exp["class_id"])
+        if fail_first and idx == 0:
+            score = max(0.0, float(exp.get("min_score", 0.5)) - 0.20)
+        detections.append((class_id, score, *[float(v) for v in exp["box"]]))
+    return dump_with_summary(
+        yolo_det_offset + 4096,
+        yolo_fields,
+        [(yolo_det_offset, yolo_detection_payload(detections))],
+    )
+
+
+yolo_det_good_cases = [
+    (case["name"], yolo_case_dump(case))
+    for case in yolo_cases
+]
+yolo_det_bad_cases = [
+    (case["name"], yolo_case_dump(case, fail_first=(idx == 1)))
+    for idx, case in enumerate(yolo_cases)
+]
+yolo_det_good_score = run_score(
     "yolo",
-    write_results("yolo", "y10_00_base", yolo_set_good),
-    "yolo-set-good",
+    write_case_results("yolo", "yolo_m30", yolo_det_good_cases),
+    "yolo-good",
 )
-yolo_set_bad_score = run_score(
+yolo_det_bad_score = run_score(
     "yolo",
-    write_results("yolo", "y10_00_base", bytes(yolo_set_bad)),
-    "yolo-set-bad",
+    write_case_results("yolo", "yolo_m30", yolo_det_bad_cases),
+    "yolo-bad",
 )
-assert yolo_set_good_score["passed"] and yolo_set_good_score["valid_accuracy"]
-assert not yolo_set_bad_score["passed"] and not yolo_set_bad_score["valid_accuracy"]
-assert "uint8_npy" in yolo_set_good_score["valid_note"]
+assert yolo_det_good_score["passed"] and yolo_det_good_score["valid_accuracy"]
+assert not yolo_det_bad_score["passed"] and not yolo_det_bad_score["valid_accuracy"]
+assert "5/5 YOLO image cases valid" in yolo_det_good_score["valid_note"]
+assert "coco_cat_524280" in yolo_det_bad_score["valid_note"]
 
 whisper_expected = 2097152
 whisper_fields = [
@@ -295,9 +310,9 @@ from pathlib import Path
 import sys
 
 tmp = Path(sys.argv[1])
-baseline = json.loads(Path("data/yolo.json").read_text())["entries"][0]
+baseline = json.loads(Path("data/dncnn.json").read_text())["entries"][0]
 score = {
-    "model": "yolo",
+    "model": "dncnn",
     "variant": baseline["variant"],
     "status": "pass",
     "passed": True,
@@ -306,10 +321,10 @@ score = {
     "valid_accuracy": True,
     "valid_note": "dump valid; accuracy valid",
 }
-(tmp / "score-yolo.json").write_text(json.dumps(score) + "\n")
+(tmp / "score-dncnn.json").write_text(json.dumps(score) + "\n")
 PY
 python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-ci-only-pass.md" \
-  --target board --models "yolo" --base-ref HEAD >/dev/null \
+  --target board --models "dncnn" --base-ref HEAD >/dev/null \
   || bad "leaderboard_gate.py should allow non-submission CI/scoring-only changes without runtime improvement"
 rm -rf "$tmp"
 
@@ -400,13 +415,31 @@ if [[ -s "$validated_out" ]]; then
   bad "changed_benchmark_models.py rejected resident Whisper with 30s audio validation"
 fi
 
+yolo_unvalidated_cfg="$(mktemp)"
+python3 - "$yolo_unvalidated_cfg" <<'PY'
+import json, sys
+from pathlib import Path
+
+out = Path(sys.argv[1])
+cfg = json.loads(Path(".github/ci/benchmark_config.json").read_text())
+cfg["models"]["yolo"].pop("validation", None)
+cfg["models"]["yolo"]["accuracy"] = {
+    "kind": "constant_u8",
+    "offset": "0x160000",
+    "count": 102400,
+    "expected_value": 128,
+    "max_abs": 0,
+}
+out.write_text(json.dumps(cfg))
+PY
 yolo_unvalidated_out="$(mktemp)"
 python3 .github/ci/scripts/changed_benchmark_models.py --target board \
-  --changed-file ported_models/yolo/src/yolo_vpu_argbuf.c \
+  --config "$yolo_unvalidated_cfg" \
+  --changed-file ported_models/yolo/src/yolo_m30_argbuf.c \
   --format space --unregistered-out "$(mktemp)" --uncovered-out "$yolo_unvalidated_out" >/dev/null \
   || bad "changed_benchmark_models.py under-validated YOLO case failed"
-if ! grep -qx 'ported_models/yolo/src/yolo_vpu_argbuf.c' "$yolo_unvalidated_out"; then
-  bad "changed_benchmark_models.py allowed YOLO source without image-set validation"
+if ! grep -qx 'ported_models/yolo/src/yolo_m30_argbuf.c' "$yolo_unvalidated_out"; then
+  bad "changed_benchmark_models.py allowed YOLO source without real-image detection validation"
 fi
 
 yolo_cfg="$(mktemp)"
@@ -417,30 +450,37 @@ from pathlib import Path
 out = Path(sys.argv[1])
 cfg = json.loads(Path(".github/ci/benchmark_config.json").read_text())
 cfg["models"]["yolo"]["validation"] = {
-    "kind": "yolo_image_set",
-    "image_count": 4,
+    "kind": "yolo_real_image_detections",
+    "image": "web_car",
+    "source_shape": [480, 640, 3],
 }
 cfg["models"]["yolo"]["accuracy"] = {
-    "kind": "uint8_npy",
-    "image_count": 4,
-    "offset": "0x160000",
-    "reference_path": "yolo-bench/yolo_image_set_output_u8.npy",
-    "shape": [4, 80, 80, 16],
-    "max_abs": 0,
+    "kind": "yolo_detections",
+    "offset": "0x01D00000",
+    "max_detections": 64,
+    "expected": [
+        {
+            "class_id": 2,
+            "label": "car",
+            "min_score": 0.55,
+            "box": [4.6, 56.0, 505.5, 273.6],
+            "min_iou": 0.70,
+        }
+    ],
 }
 out.write_text(json.dumps(cfg))
 PY
 yolo_validated_out="$(mktemp)"
 python3 .github/ci/scripts/changed_benchmark_models.py --target board \
   --config "$yolo_cfg" \
-  --changed-file ported_models/yolo/src/yolo_vpu_argbuf.c \
+  --changed-file ported_models/yolo/src/yolo_m30_argbuf.c \
   --format space --unregistered-out "$(mktemp)" --uncovered-out "$yolo_validated_out" >/dev/null \
-  || bad "changed_benchmark_models.py image-set YOLO validation case failed"
+  || bad "changed_benchmark_models.py real-image YOLO validation case failed"
 if [[ -s "$yolo_validated_out" ]]; then
-  bad "changed_benchmark_models.py rejected YOLO with image-set validation"
+  bad "changed_benchmark_models.py rejected YOLO with real-image detection validation"
 fi
 rm -f "$covered_out" "$uncovered_out" "$tmp_cfg" "$under_validated_out" "$validated_out" \
-  "$yolo_unvalidated_out" "$yolo_cfg" "$yolo_validated_out"
+  "$yolo_unvalidated_cfg" "$yolo_unvalidated_out" "$yolo_cfg" "$yolo_validated_out"
 
 if [[ "$fail" -ne 0 ]]; then
   printf '\npreflight FAILED — fix the above before pushing to CI.\n' >&2

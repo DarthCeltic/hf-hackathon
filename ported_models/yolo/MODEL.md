@@ -1,13 +1,14 @@
-# YOLO Model Card
+# YOLOv10n End-to-End
 
-- Reference family: YOLOv10n object detection.
-- Hugging Face base: `onnx-community/yolov10n` at
-  `57657320425ee34056408a57ad9d29c4d4815bd8`.
-- Reference file: `onnx/model.onnx`.
-- Main source: `src/yolo_vpu_argbuf.c`.
-- Smoke manifest: `manifests/yolo_10_variants.txt`.
-- Sweep manifest: `manifests/yolo_100_variants.txt`.
-- Key docs: `docs/optimizations.md`.
+| Field | Value |
+| --- | --- |
+| Model | YOLOv10n detector |
+| Input | `uint8[480][640][3]` RGB, HWC |
+| Preprocess | Bilinear resize to 288x512, scale by 1/255, HWC to CHW |
+| Output | `{count, class_id, score, x1, y1, x2, y2}` detections |
+| CI metric | Mean end-to-end kernel wait seconds across five images |
+| CI accuracy | Required category detections across the five-image static suite |
 
-Use the pinned Hugging Face model config/preprocessor metadata for model I/O and
-keep large ONNX/input artifacts outside git.
+This is the canonical `yolo` leaderboard benchmark. It proves that a real image
+flows through the detector and produces expected categories across multiple
+scenes, rather than only checking that an intermediate tensor has a fixed value.

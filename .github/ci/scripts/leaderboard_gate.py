@@ -106,6 +106,37 @@ def source_model_root(model_cfg: dict[str, Any]) -> str | None:
     return str(Path(source).parent)
 
 
+def configured_asset_paths(model_cfg: dict[str, Any]) -> set[str]:
+    root = source_model_root(model_cfg)
+    if not root or not root.startswith("ported_models/"):
+        return set()
+
+    rels: set[str] = set()
+    loads = list(model_cfg.get("file_loads", []))
+    for case in model_cfg.get("benchmark_cases", []):
+        if isinstance(case, dict):
+            loads.extend(case.get("file_loads", []))
+    for load in loads:
+        paths = load.get("paths") or [load.get("path")]
+        for path in paths:
+            if path:
+                rels.add(norm(path))
+
+    accuracies = [model_cfg.get("accuracy", {})]
+    for case in model_cfg.get("benchmark_cases", []):
+        if isinstance(case, dict):
+            accuracies.append(case.get("accuracy", {}))
+    for accuracy in accuracies:
+        if not isinstance(accuracy, dict):
+            continue
+        paths = accuracy.get("reference_paths") or [accuracy.get("reference_path")]
+        for path in paths:
+            if path:
+                rels.add(norm(path))
+
+    return {norm(f"{root}/assets/{rel}") for rel in rels if rel}
+
+
 def is_model_code_path(path: str) -> bool:
     name = Path(path).name.lower()
     if name in {"readme.md", "model.md", "third_party.md"}:
@@ -152,6 +183,8 @@ def model_submission_changed(
             return True
         if source and path == source:
             return True
+        if path in configured_asset_paths(model_cfg):
+            return True
         if root and is_under(path, root) and is_model_code_path(path):
             return True
 
@@ -174,6 +207,13 @@ def metric_config(cfg: dict[str, Any], model: str) -> tuple[str, str, bool]:
     label = score_cfg.get("label", "Kernel wait" if metric == "kernel_wait_s" else metric)
     higher = bool(score_cfg.get("higher_is_better", not cfg.get("lower_is_better", True)))
     return str(metric), str(label), higher
+
+
+def baseline_variant(cfg: dict[str, Any], model: str) -> str | None:
+    model_cfg = cfg.get("models", {}).get(model, {})
+    score_cfg = model_cfg.get("score", {})
+    variant = score_cfg.get("baseline_variant")
+    return str(variant) if variant else None
 
 
 def load_json_from_ref(path: str, base_ref: str) -> Any | None:
@@ -244,7 +284,7 @@ def beats_baseline(value: float, baseline: float, higher: bool, min_relative: fl
 def fmt_metric(value: float | int | None, metric: str) -> str:
     if value is None:
         return "-"
-    if metric == "kernel_wait_s":
+    if metric in {"kernel_wait_s", "kernel_wait_per_image_s"}:
         return f"{float(value):.6f}s"
     if metric.endswith("tokens_per_second") or metric == "tokens_per_second":
         return f"{float(value):.4f}"
@@ -260,7 +300,7 @@ def is_whisper_30s_audio_path(path: str) -> bool:
     return path.startswith("ported_models/whisper/src/whisper_resident_")
 
 
-def is_yolo_image_set_path(path: str) -> bool:
+def is_yolo_real_image_path(path: str) -> bool:
     return path.startswith("ported_models/yolo/src/")
 
 
@@ -271,11 +311,11 @@ def uncovered_note(path: str) -> str:
             "audio/transcript benchmark covers it. The compact transformer "
             "smoke row is not enough for Whisper fidelity changes."
         )
-    if is_yolo_image_set_path(path):
+    if is_yolo_real_image_path(path):
         return (
-            "YOLO source changed, but no configured fixed image-set output-tensor "
-            "benchmark covers it. The constant-output smoke row is not enough "
-            "for YOLO fidelity changes."
+            "YOLO source changed, but no configured five-image real-image "
+            "detection benchmark covers it. The gate must validate expected "
+            "categories across the fixed image suite."
         )
     return "Changed runtime source is not built by any configured benchmark row. Add or update a benchmark row before merging."
 
@@ -327,7 +367,7 @@ def main() -> int:
             "CI/scoring-only changes must pass board CI but do not need to improve runtime. "
             "Fidelity-sensitive paths need their model-specific validation row; resident "
             "Whisper changes require a 30 s audio/transcript validation, and YOLO changes "
-            "require a fixed image-set output-tensor validation."
+            "require five-image real-image detection validation."
         ),
         "",
         "| Model | Metric | PR score | Current best | Verdict | Notes |",
@@ -359,6 +399,9 @@ def main() -> int:
         metric, label, higher = metric_config(cfg, model)
         score_path = scores_dir / f"score-{model}.json"
         entries = leaderboard_entries(model, args.base_ref)
+        required_variant = baseline_variant(cfg, model)
+        if required_variant:
+            entries = [entry for entry in entries if entry.get("variant") == required_variant]
         baseline = best_entry(entries, metric, higher)
         baseline_value = float(baseline[metric]) if baseline else None
         baseline_text = fmt_metric(baseline_value, metric)

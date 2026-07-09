@@ -38,12 +38,23 @@ def metric_config(model: str) -> tuple[str, str, bool]:
     return metric, label, higher
 
 
+def baseline_variant(model: str) -> str | None:
+    data = config()
+    model_cfg = data.get("models", {}).get(model, {})
+    score_cfg = model_cfg.get("score", {})
+    variant = score_cfg.get("baseline_variant")
+    return str(variant) if variant else None
+
+
 def load_best(model: str) -> dict | None:
     path = LEADERBOARD_DIR / f"{model}.json"
     if not path.is_file():
         return None
     data = json.loads(path.read_text())
     entries = data.get("entries", [])
+    required_variant = baseline_variant(model)
+    if required_variant:
+        entries = [entry for entry in entries if entry.get("variant") == required_variant]
     return entries[0] if entries else None
 
 
@@ -62,7 +73,7 @@ def fmt_metric(model: str, entry: dict | None) -> tuple[str, str]:
     if not entry or entry.get(metric) is None:
         return label, "-"
     value = entry[metric]
-    if metric == "kernel_wait_s":
+    if metric in {"kernel_wait_s", "kernel_wait_per_image_s"}:
         return label, f"{value:.6f}s"
     if metric.endswith("tokens_per_second") or metric == "tokens_per_second":
         return label, f"{value:.2f}"

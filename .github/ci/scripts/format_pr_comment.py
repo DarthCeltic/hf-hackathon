@@ -56,7 +56,7 @@ def is_whisper_30s_audio_path(path: str) -> bool:
     return path.startswith("ported_models/whisper/src/whisper_resident_")
 
 
-def is_yolo_image_set_path(path: str) -> bool:
+def is_yolo_real_image_path(path: str) -> bool:
     return path.startswith("ported_models/yolo/src/")
 
 
@@ -66,9 +66,9 @@ def uncovered_note(path: str) -> str:
             "resident Whisper source changed; no configured 30 s audio/transcript "
             "benchmark covers it"
         )
-    if is_yolo_image_set_path(path):
+    if is_yolo_real_image_path(path):
         return (
-            "YOLO source changed; no configured fixed image-set output-tensor "
+            "YOLO source changed; no configured five-image category detection "
             "benchmark covers it"
         )
     return "changed runtime source is not built by any configured benchmark row"
@@ -90,7 +90,7 @@ def fmt_score(model: str, score: dict) -> tuple[str, str]:
     value = score.get(metric)
     if value is None:
         return label, "—"
-    if metric == "kernel_wait_s":
+    if metric in {"kernel_wait_s", "kernel_wait_per_image_s"}:
         return label, f"{value:.6f}s"
     if metric.endswith("tokens_per_second") or metric == "tokens_per_second":
         return label, f"{value:.2f}"
@@ -221,8 +221,7 @@ def main() -> int:
             + ". Update the configured benchmark source, add a benchmark row for the new variant, "
             "or keep the change out of the submission. Resident Whisper changes require a "
             "30 s audio/transcript validation row, not just the compact transformer smoke benchmark. "
-            "YOLO changes require a fixed image-set output-tensor validation row, not just the "
-            "constant-output smoke benchmark."
+            "YOLO changes require a five-image category detection row."
         )
 
     lines.append("")

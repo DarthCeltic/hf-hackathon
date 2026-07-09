@@ -30,11 +30,14 @@ FRAMEWORK_ARTIFACT_KINDS = {
 GENERIC_BOARD_INFRA_PATHS = {
     ".github/workflows/benchmark-board.yml",
     ".github/ci/scripts/benchmark_config_helpers.py",
+    ".github/ci/scripts/build_leaderboard_elf.sh",
     ".github/ci/scripts/changed_benchmark_models.py",
+    ".github/ci/scripts/prepare_benchmark_inputs.sh",
     ".github/ci/scripts/resolve_leaderboard_team.sh",
     ".github/ci/scripts/run_model_benchmark.sh",
     ".github/ci/scripts/score_results.py",
     ".github/ci/platform/deploy/soc3-benchmark.sh",
+    "scripts/run_sysemu_model_ports.sh",
 }
 
 RUNNER_INFRA_PATHS = {
@@ -67,7 +70,7 @@ RUNTIME_CODE_SUFFIXES = {
 
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
 WHISPER_30S_AUDIO_VALIDATION = "whisper_30s_audio"
-YOLO_IMAGE_SET_VALIDATION = "yolo_image_set"
+YOLO_REAL_IMAGE_DETECTIONS_VALIDATION = "yolo_real_image_detections"
 WHISPER_TRANSCRIPT_ACCURACY_KINDS = {
     "transcript",
     "transcript_exact",
@@ -217,6 +220,37 @@ def source_model_root(model_cfg: dict[str, Any]) -> str | None:
     return str(Path(source).parent)
 
 
+def configured_asset_paths(model_cfg: dict[str, Any]) -> set[str]:
+    root = source_model_root(model_cfg)
+    if not root or not root.startswith("ported_models/"):
+        return set()
+
+    rels: set[str] = set()
+    loads = list(model_cfg.get("file_loads", []))
+    for case in model_cfg.get("benchmark_cases", []):
+        if isinstance(case, dict):
+            loads.extend(case.get("file_loads", []))
+    for load in loads:
+        paths = load.get("paths") or [load.get("path")]
+        for path in paths:
+            if path:
+                rels.add(norm(path))
+
+    accuracies = [model_cfg.get("accuracy", {})]
+    for case in model_cfg.get("benchmark_cases", []):
+        if isinstance(case, dict):
+            accuracies.append(case.get("accuracy", {}))
+    for accuracy in accuracies:
+        if not isinstance(accuracy, dict):
+            continue
+        paths = accuracy.get("reference_paths") or [accuracy.get("reference_path")]
+        for path in paths:
+            if path:
+                rels.add(norm(path))
+
+    return {norm(f"{root}/assets/{rel}") for rel in rels if rel}
+
+
 def is_model_code_path(path: str) -> bool:
     name = Path(path).name.lower()
     if name in {"readme.md", "model.md", "third_party.md"}:
@@ -248,42 +282,38 @@ def required_validation_for_path(path: str) -> str | None:
     if is_under(path, "ported_models/whisper/src") and name.startswith("whisper_resident_"):
         return WHISPER_30S_AUDIO_VALIDATION
     if is_under(path, "ported_models/yolo/src"):
-        return YOLO_IMAGE_SET_VALIDATION
+        return YOLO_REAL_IMAGE_DETECTIONS_VALIDATION
     return None
 
 
 def model_satisfies_validation(model_cfg: dict[str, Any], requirement: str | None) -> bool:
     if not requirement:
         return True
-    if requirement == YOLO_IMAGE_SET_VALIDATION:
+    if requirement == YOLO_REAL_IMAGE_DETECTIONS_VALIDATION:
         validation = model_cfg.get("validation", {})
-        accuracy = model_cfg.get("accuracy", {})
-        if not isinstance(validation, dict) or not isinstance(accuracy, dict):
+        if not isinstance(validation, dict):
             return False
-        if validation.get("kind") != YOLO_IMAGE_SET_VALIDATION:
+        if validation.get("kind") != YOLO_REAL_IMAGE_DETECTIONS_VALIDATION:
             return False
-        try:
-            image_count = int(validation.get("image_count", 0))
-        except (TypeError, ValueError):
-            return False
-        if image_count < int(validation.get("min_image_count", 3)):
-            return False
-        if accuracy.get("kind") not in {"uint8_npy", "sha256"}:
+        cases = model_cfg.get("benchmark_cases", [])
+        if not isinstance(cases, list) or not cases:
             return False
         try:
-            if int(accuracy.get("image_count", image_count)) != image_count:
-                return False
+            min_image_count = int(validation.get("min_image_count", 5))
         except (TypeError, ValueError):
             return False
-        if accuracy.get("kind") == "uint8_npy":
-            shape = accuracy.get("shape", [])
-            if not isinstance(shape, list) or not shape:
-                return False
-            try:
-                return int(shape[0]) == image_count
-            except (TypeError, ValueError):
-                return False
-        return True
+        valid_cases = 0
+        for case in cases:
+            if not isinstance(case, dict) or not case.get("name"):
+                continue
+            accuracy = case.get("accuracy", {})
+            if not isinstance(accuracy, dict) or accuracy.get("kind") != "yolo_detections":
+                continue
+            expected = accuracy.get("expected", [])
+            if not isinstance(expected, list) or not expected:
+                continue
+            valid_cases += 1
+        return valid_cases >= min_image_count
     if requirement != WHISPER_30S_AUDIO_VALIDATION:
         return False
 
@@ -590,6 +620,9 @@ def main() -> int:
                 continue
             source = repo_rel(model_cfg.get("source"))
             if source and (path == source or is_under(path, str(Path(source).parent))):
+                selected.add(model)
+                continue
+            if path in configured_asset_paths(model_cfg):
                 selected.add(model)
                 continue
             root = source_model_root(model_cfg)

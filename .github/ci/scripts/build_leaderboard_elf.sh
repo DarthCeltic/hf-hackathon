@@ -38,6 +38,9 @@ for define in hart_defines:
         value = define.split("=", 1)[1]
         if value.isdigit():
             link_defines.append(f"-Wl,--defsym=NUM_HARTS={value}")
+region_size = m.get("region_size") or m.get("mem_size")
+if region_size:
+    link_defines.append(f"-Wl,--defsym=region0_size={region_size}")
 variant = m["canonical_variant"]
 src = os.path.join(repo, m["source"])
 bench_dir = os.path.join(amp, m["bench_dir"])

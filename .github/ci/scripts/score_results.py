@@ -25,6 +25,7 @@ CONFIG_PATH = REPO_ROOT / ".github" / "ci" / "benchmark_config.json"
 DNCNN_MAGIC = 0xD3C11003
 YOLO_MAGIC = 0x10500001
 SUMMARY = struct.Struct("<16I")
+YOLO_DETECTION = struct.Struct("<I5f")
 
 
 def int_cfg(value: int | str) -> int:
@@ -99,6 +100,12 @@ def cell_text(text: str, limit: int = 80) -> str:
     return (flat[: limit - 1] + "...") if len(flat) > limit else flat
 
 
+def with_metrics(metrics: dict, **updates) -> dict:
+    merged = dict(metrics)
+    merged.update(updates)
+    return merged
+
+
 def load_uint8_npy(path: Path) -> tuple[tuple[int, ...], bytes]:
     data = path.read_bytes()
     if not data.startswith(b"\x93NUMPY"):
@@ -161,8 +168,52 @@ def byte_diff_metrics(actual: bytes, expected: bytes) -> tuple[int, float]:
     return max_abs, mean_abs
 
 
-def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: dict | None) -> tuple[bool, str, dict]:
-    acfg = mcfg.get("accuracy")
+def box_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0.0 else 0.0
+
+
+def max_box_abs_diff(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    return max(abs(x - y) for x, y in zip(a, b))
+
+
+def read_yolo_detections(path: Path, offset: int, max_detections: int) -> list[dict]:
+    count = struct.unpack("<I", read_dump_bytes(path, offset, 4))[0]
+    if count > max_detections:
+        raise ValueError(f"detection count {count} exceeds configured max {max_detections}")
+    payload = read_dump_bytes(path, offset + 4, count * YOLO_DETECTION.size)
+    detections = []
+    for idx in range(count):
+        class_id, score, x1, y1, x2, y2 = YOLO_DETECTION.unpack_from(payload, idx * YOLO_DETECTION.size)
+        detections.append(
+            {
+                "class_id": int(class_id),
+                "score": float(score),
+                "box": (float(x1), float(y1), float(x2), float(y2)),
+            }
+        )
+    return detections
+
+
+def validate_accuracy(
+    model: str,
+    dump_path: Path | None,
+    mcfg: dict,
+    summary: dict | None,
+    accuracy_cfg: dict | None = None,
+) -> tuple[bool, str, dict]:
+    acfg = accuracy_cfg if accuracy_cfg is not None else mcfg.get("accuracy")
     if not acfg:
         return True, "no accuracy gate configured", {
             "valid_accuracy": True,
@@ -189,7 +240,7 @@ def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: d
             actual = int(summary.get("output_sum", -1))
             ok = actual == expected
             note = f"accuracy checksum {'valid' if ok else 'failed'} output_sum={actual} expected={expected}"
-            return ok, note, metrics | {"valid_accuracy": ok}
+            return ok, note, with_metrics(metrics, valid_accuracy=ok)
 
         if kind == "sha256":
             if dump_path is None or not dump_path.is_file():
@@ -203,7 +254,7 @@ def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: d
                 f"accuracy sha256 {'valid' if ok else 'failed'} "
                 f"actual={actual[:12]} expected={expected[:12]}"
             )
-            return ok, note, metrics | {"valid_accuracy": ok}
+            return ok, note, with_metrics(metrics, valid_accuracy=ok)
 
         if kind == "constant_u8":
             if dump_path is None or not dump_path.is_file():
@@ -220,11 +271,12 @@ def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: d
                 f"accuracy {'valid' if ok else 'failed'} constant_u8 "
                 f"max_abs={max_abs} mean_abs={mean_abs:.6f} gate={max_allowed}"
             )
-            return ok, note, metrics | {
-                "valid_accuracy": ok,
-                "accuracy_max_abs": max_abs,
-                "accuracy_mean_abs": mean_abs,
-            }
+            return ok, note, with_metrics(
+                metrics,
+                valid_accuracy=ok,
+                accuracy_max_abs=max_abs,
+                accuracy_mean_abs=mean_abs,
+            )
 
         if kind == "uint8_npy":
             if dump_path is None or not dump_path.is_file():
@@ -251,12 +303,92 @@ def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: d
                 f"accuracy {'valid' if ok else 'failed'} uint8_npy "
                 f"max_abs={max_abs} mean_abs={mean_abs:.6f} gate={max_allowed}"
             )
-            return ok, note, metrics | {
-                "valid_accuracy": ok,
-                "accuracy_max_abs": max_abs,
-                "accuracy_mean_abs": mean_abs,
-                "accuracy_reference": rel,
-            }
+            return ok, note, with_metrics(
+                metrics,
+                valid_accuracy=ok,
+                accuracy_max_abs=max_abs,
+                accuracy_mean_abs=mean_abs,
+                accuracy_reference=rel,
+            )
+
+        if kind == "yolo_detections":
+            if dump_path is None or not dump_path.is_file():
+                return False, "accuracy check failed: missing dump.bin", metrics
+            offset = int_cfg(acfg["offset"])
+            max_detections = int_cfg(acfg.get("max_detections", 64))
+            detections = read_yolo_detections(dump_path, offset, max_detections)
+            expected = acfg.get("expected", [])
+            if not isinstance(expected, list) or not expected:
+                return False, "accuracy check failed: yolo_detections has no expected entries", metrics
+
+            used: set[int] = set()
+            matches: list[str] = []
+            failures: list[str] = []
+            box_abs_values: list[float] = []
+
+            for exp in expected:
+                class_id = int_cfg(exp["class_id"])
+                label = str(exp.get("label") or f"class_{class_id}")
+                min_score = float(exp.get("min_score", acfg.get("min_score", 0.0)))
+                exp_box = exp.get("box")
+                exp_box_tuple = tuple(float(v) for v in exp_box) if exp_box is not None else None
+
+                candidates = [
+                    (idx, det)
+                    for idx, det in enumerate(detections)
+                    if idx not in used
+                    and int(det["class_id"]) == class_id
+                    and float(det["score"]) >= min_score
+                ]
+                if not candidates:
+                    failures.append(f"{label}: missing class_id={class_id} score>={min_score:.2f}")
+                    continue
+
+                if exp_box_tuple is None:
+                    best_idx, best_det = max(candidates, key=lambda item: float(item[1]["score"]))
+                    used.add(best_idx)
+                    matches.append(f"{label} score={float(best_det['score']):.3f}")
+                    continue
+
+                scored = []
+                for idx, det in candidates:
+                    det_box = det["box"]
+                    iou = box_iou(det_box, exp_box_tuple)
+                    abs_diff = max_box_abs_diff(det_box, exp_box_tuple)
+                    scored.append((iou, -abs_diff, idx, det, abs_diff))
+                iou, neg_abs_diff, best_idx, best_det, abs_diff = max(scored, key=lambda item: (item[0], item[1]))
+                min_iou = float(exp.get("min_iou", acfg.get("min_iou", 0.5)))
+                max_abs_allowed = float(exp.get("max_box_abs", acfg.get("max_box_abs", "inf")))
+                if iou < min_iou:
+                    failures.append(f"{label}: iou={iou:.3f} below {min_iou:.3f}")
+                    continue
+                if abs_diff > max_abs_allowed:
+                    failures.append(f"{label}: box_abs={abs_diff:.2f} above {max_abs_allowed:.2f}")
+                    continue
+                used.add(best_idx)
+                box_abs_values.append(abs_diff)
+                matches.append(
+                    f"{label} score={float(best_det['score']):.3f} iou={iou:.3f} box_abs={abs_diff:.1f}"
+                )
+
+            ok = not failures
+            found = ", ".join(matches) if matches else "none"
+            if failures:
+                found += "; " if found else ""
+                found += "failures: " + "; ".join(failures)
+            note = (
+                f"accuracy yolo_detections {'valid' if ok else 'failed'} "
+                f"count={len(detections)} found={found}"
+            )
+            max_abs = max(box_abs_values) if box_abs_values else None
+            mean_abs = sum(box_abs_values) / len(box_abs_values) if box_abs_values else None
+            return ok, note, with_metrics(
+                metrics,
+                valid_accuracy=ok,
+                accuracy_max_abs=max_abs,
+                accuracy_mean_abs=mean_abs,
+                accuracy_reference=acfg.get("reference"),
+            )
 
         if kind in ("transcript", "transcript_exact"):
             if dump_path is None or not dump_path.is_file():
@@ -295,12 +427,13 @@ def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: d
                 f"accuracy transcript_exact {'valid' if ok else 'failed'} "
                 f"actual={actual_preview!r} expected={expected_preview!r}"
             )
-            return ok, note, metrics | {
-                "valid_accuracy": ok,
-                "accuracy_reference": expected_ref,
-                "accuracy_text": actual_norm,
-                "accuracy_expected_text": expected_norm,
-            }
+            return ok, note, with_metrics(
+                metrics,
+                valid_accuracy=ok,
+                accuracy_reference=expected_ref,
+                accuracy_text=actual_norm,
+                accuracy_expected_text=expected_norm,
+            )
 
         return False, f"accuracy check failed: unknown kind {kind}", metrics
     except Exception as exc:
@@ -328,6 +461,20 @@ def validate_dump(model: str, dump_path: Path | None, magic_cfg: str | None) -> 
     return True, "dump valid"
 
 
+def benchmark_image_count(mcfg: dict) -> int | None:
+    for section in ("accuracy", "validation"):
+        cfg = mcfg.get(section, {})
+        if not isinstance(cfg, dict) or "image_count" not in cfg:
+            continue
+        try:
+            value = int(cfg["image_count"])
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
 def find_job_dir(results_dir: Path, model: str, variant: str) -> Path | None:
     jobs = results_dir / "jobs"
     if not jobs.is_dir():
@@ -336,6 +483,194 @@ def find_job_dir(results_dir: Path, model: str, variant: str) -> Path | None:
         if variant in job.name and model in job.name:
             return job
     return None
+
+
+def row_paths(results_dir: Path, row: dict, job_dir: Path | None = None) -> tuple[Path | None, Path | None]:
+    log_path = (results_dir / row["log"]) if row.get("log") else None
+    dump_path = (results_dir / row["dump"]) if row.get("dump") else None
+    if job_dir and (job_dir / "run.log").is_file():
+        log_path = job_dir / "run.log"
+    if job_dir and (job_dir / "dump.bin").is_file():
+        dump_path = job_dir / "dump.bin"
+    return log_path, dump_path
+
+
+def evaluate_row(
+    model: str,
+    mcfg: dict,
+    row: dict,
+    results_dir: Path,
+    magic_cfg: str | None,
+    accuracy_cfg: dict | None = None,
+    job_dir: Path | None = None,
+) -> dict:
+    status = row.get("status", "")
+    log_path, dump_path = row_paths(results_dir, row, job_dir)
+    if status == "fail" and log_path and log_path.is_file():
+        log_text = log_path.read_text(errors="ignore")
+        if "kernel execution timed out" in log_text or "timed out" in log_text.lower():
+            status = "timeout"
+
+    kernel_wait = row.get("kernel_wait_s") or ""
+    if not kernel_wait and log_path and log_path.is_file():
+        w = wait_seconds(log_path)
+        kernel_wait = f"{w:.6f}" if w is not None else ""
+
+    valid_dump, valid_note = validate_dump(model, dump_path, magic_cfg)
+    parsed_summary = dump_summary(dump_path, model) if dump_path and dump_path.is_file() else None
+    valid_accuracy, accuracy_note, accuracy_metrics = validate_accuracy(
+        model,
+        dump_path,
+        mcfg,
+        parsed_summary,
+        accuracy_cfg=accuracy_cfg,
+    )
+    combined_note = valid_note
+    if accuracy_note:
+        combined_note = f"{valid_note}; {accuracy_note}"
+    passed = status == "pass" and bool(kernel_wait) and valid_dump and valid_accuracy
+    return {
+        "case": row.get("case") or "",
+        "status": "pass" if passed else (status if status and status != "pass" else "fail"),
+        "passed": passed,
+        "kernel_wait_s": float(kernel_wait) if kernel_wait else None,
+        "valid_dump": valid_dump,
+        "valid_accuracy": valid_accuracy,
+        "valid_note": combined_note,
+        "accuracy_metrics": accuracy_metrics,
+        "emu_cycle_last": row.get("emu_cycle_last") or None,
+        "elapsed_s": float(row["elapsed_s"]) if row.get("elapsed_s") else None,
+        "note": row.get("note") or "",
+    }
+
+
+def score_benchmark_cases(
+    model: str,
+    mcfg: dict,
+    variant: str,
+    magic_cfg: str | None,
+    rows: list[dict],
+    results_dir: Path,
+    sha: str,
+    ref: str,
+    actor: str,
+    run_url: str,
+) -> dict | None:
+    cases = [case for case in mcfg.get("benchmark_cases", []) if isinstance(case, dict) and case.get("name")]
+    if not cases:
+        return None
+
+    rows_by_case = {
+        row.get("case"): row
+        for row in rows
+        if row.get("model") == model and row.get("variant") == variant and row.get("case")
+    }
+    case_results = []
+    for case in cases:
+        name = str(case["name"])
+        row = rows_by_case.get(name)
+        if row is None:
+            case_results.append(
+                {
+                    "case": name,
+                    "status": "missing",
+                    "passed": False,
+                    "kernel_wait_s": None,
+                    "valid_dump": False,
+                    "valid_accuracy": False,
+                    "valid_note": "missing benchmark case row",
+                    "accuracy_metrics": {
+                        "accuracy_kind": case.get("accuracy", {}).get("kind"),
+                        "accuracy_max_abs": None,
+                        "accuracy_mean_abs": None,
+                        "accuracy_reference": case.get("accuracy", {}).get("reference"),
+                    },
+                    "emu_cycle_last": None,
+                    "elapsed_s": None,
+                    "note": "missing benchmark case row",
+                }
+            )
+            continue
+        case_results.append(
+            evaluate_row(
+                model,
+                mcfg,
+                row,
+                results_dir,
+                magic_cfg,
+                accuracy_cfg=case.get("accuracy") if isinstance(case.get("accuracy"), dict) else None,
+            )
+        )
+
+    passed = all(result["passed"] for result in case_results)
+    waits = [result["kernel_wait_s"] for result in case_results if isinstance(result["kernel_wait_s"], float)]
+    kernel_wait_value = sum(waits) / len(waits) if waits else None
+    elapsed_values = [result["elapsed_s"] for result in case_results if isinstance(result["elapsed_s"], float)]
+    elapsed_s = sum(elapsed_values) if elapsed_values else None
+    failed_notes = [
+        f"{result['case']}: {result['valid_note'] or result['status']}"
+        for result in case_results
+        if not result["passed"]
+    ]
+    valid_note = (
+        f"{sum(1 for result in case_results if result['passed'])}/{len(case_results)} "
+        "YOLO image cases valid"
+    )
+    if failed_notes:
+        valid_note += "; " + "; ".join(failed_notes[:3])
+
+    accuracy_metrics = [result["accuracy_metrics"] for result in case_results]
+    max_abs_values = [
+        metric.get("accuracy_max_abs")
+        for metric in accuracy_metrics
+        if isinstance(metric.get("accuracy_max_abs"), (int, float))
+    ]
+    mean_abs_values = [
+        metric.get("accuracy_mean_abs")
+        for metric in accuracy_metrics
+        if isinstance(metric.get("accuracy_mean_abs"), (int, float))
+    ]
+    first_kind = next((metric.get("accuracy_kind") for metric in accuracy_metrics if metric.get("accuracy_kind")), None)
+    return {
+        "model": model,
+        "variant": variant,
+        "status": "pass" if passed else "fail",
+        "passed": passed,
+        "kernel_wait_s": kernel_wait_value,
+        "kernel_wait_per_image_s": kernel_wait_value,
+        "tokens_per_second": None,
+        "prompt_tokens_per_second": None,
+        "prompt_tokens": None,
+        "completion_tokens": None,
+        "total_tokens": None,
+        "perplexity": None,
+        "perplexity_error": None,
+        "perplexity_tokens": None,
+        "perplexity_prompt_tokens_per_second": None,
+        "valid_dump": all(result["valid_dump"] for result in case_results),
+        "valid_note": valid_note,
+        "valid_accuracy": all(result["valid_accuracy"] for result in case_results),
+        "accuracy_kind": first_kind,
+        "accuracy_max_abs": max(max_abs_values) if max_abs_values else None,
+        "accuracy_mean_abs": sum(mean_abs_values) / len(mean_abs_values) if mean_abs_values else None,
+        "accuracy_reference": f"{len(case_results)}-image YOLO detection suite",
+        "case_results": [
+            {
+                key: value
+                for key, value in result.items()
+                if key != "accuracy_metrics"
+            }
+            for result in case_results
+        ],
+        "emu_cycle_last": None,
+        "elapsed_s": elapsed_s,
+        "note": "",
+        "sha": sha,
+        "ref": ref,
+        "team": actor,
+        "run_url": run_url,
+        "scored_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def score_from_results(
@@ -355,54 +690,53 @@ def score_from_results(
     if not results_tsv.is_file():
         return fail_payload(model, variant, sha, ref, actor, run_url, "missing results.tsv")
 
-    row = None
+    rows = []
     with results_tsv.open() as f:
         reader = csv.DictReader(f, delimiter="\t")
         for r in reader:
-            if r.get("model") == model and r.get("variant") == variant:
-                row = r
-                break
+            rows.append(r)
+
+    case_score = score_benchmark_cases(
+        model,
+        mcfg,
+        variant,
+        magic_cfg,
+        rows,
+        results_dir,
+        sha,
+        ref,
+        actor,
+        run_url,
+    )
+    if case_score is not None:
+        return case_score
+
+    row = None
+    for r in rows:
+        if r.get("model") == model and r.get("variant") == variant:
+            row = r
+            break
 
     if row is None:
         return fail_payload(model, variant, sha, ref, actor, run_url, "canonical variant not in results.tsv")
 
-    status = row.get("status", "")
     job_dir = find_job_dir(results_dir, model, variant)
-    log_path_early = (results_dir / row["log"]) if row.get("log") else None
-    if job_dir and (job_dir / "run.log").is_file():
-        log_path_early = job_dir / "run.log"
-    if status == "fail" and log_path_early and log_path_early.is_file():
-        log_text = log_path_early.read_text(errors="ignore")
-        if "kernel execution timed out" in log_text or "timed out" in log_text.lower():
-            status = "timeout"
-    log_path = (results_dir / row["log"]) if row.get("log") else None
-    if job_dir and (job_dir / "run.log").is_file():
-        log_path = job_dir / "run.log"
-    dump_path = (results_dir / row["dump"]) if row.get("dump") else None
-    if job_dir and (job_dir / "dump.bin").is_file():
-        dump_path = job_dir / "dump.bin"
-
-    kernel_wait = row.get("kernel_wait_s") or ""
-    if not kernel_wait and log_path and log_path.is_file():
-        w = wait_seconds(log_path)
-        kernel_wait = f"{w:.6f}" if w is not None else ""
-
-    valid_dump, valid_note = validate_dump(model, dump_path, magic_cfg)
-    parsed_summary = dump_summary(dump_path, model) if dump_path and dump_path.is_file() else None
-    valid_accuracy, accuracy_note, accuracy_metrics = validate_accuracy(model, dump_path, mcfg, parsed_summary)
-    combined_note = valid_note
-    if accuracy_note:
-        combined_note = f"{valid_note}; {accuracy_note}"
-    passed = status == "pass" and bool(kernel_wait) and valid_dump and valid_accuracy
-
-    score_status = "pass" if passed else (status if status and status != "pass" else "fail")
+    evaluated = evaluate_row(model, mcfg, row, results_dir, magic_cfg, job_dir=job_dir)
+    kernel_wait_value = evaluated["kernel_wait_s"]
+    image_count = benchmark_image_count(mcfg)
+    kernel_wait_per_image = (
+        kernel_wait_value / image_count
+        if kernel_wait_value is not None and image_count
+        else None
+    )
 
     return {
         "model": model,
         "variant": variant,
-        "status": score_status,
-        "passed": passed,
-        "kernel_wait_s": float(kernel_wait) if kernel_wait else None,
+        "status": evaluated["status"],
+        "passed": evaluated["passed"],
+        "kernel_wait_s": kernel_wait_value,
+        "kernel_wait_per_image_s": kernel_wait_per_image,
         "tokens_per_second": None,
         "prompt_tokens_per_second": None,
         "prompt_tokens": None,
@@ -412,12 +746,12 @@ def score_from_results(
         "perplexity_error": None,
         "perplexity_tokens": None,
         "perplexity_prompt_tokens_per_second": None,
-        "valid_dump": valid_dump,
-        "valid_note": combined_note,
-        **accuracy_metrics,
-        "emu_cycle_last": row.get("emu_cycle_last") or None,
-        "elapsed_s": float(row["elapsed_s"]) if row.get("elapsed_s") else None,
-        "note": row.get("note") or "",
+        "valid_dump": evaluated["valid_dump"],
+        "valid_note": evaluated["valid_note"],
+        **evaluated["accuracy_metrics"],
+        "emu_cycle_last": evaluated["emu_cycle_last"],
+        "elapsed_s": evaluated["elapsed_s"],
+        "note": evaluated["note"],
         "sha": sha,
         "ref": ref,
         "team": actor,
@@ -442,6 +776,7 @@ def fail_payload(
         "status": status,
         "passed": False,
         "kernel_wait_s": None,
+        "kernel_wait_per_image_s": None,
         "tokens_per_second": None,
         "prompt_tokens_per_second": None,
         "prompt_tokens": None,

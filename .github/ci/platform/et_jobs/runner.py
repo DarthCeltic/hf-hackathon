@@ -183,7 +183,7 @@ def _resolve_smoke_elf() -> str:
         return elf
     for alt in [
         config.REPO_ROOT / "local-artifacts/kernels/histogram.erbium-soc1sim.elf",
-        config.MODEL_PORT_ARTIFACTS / "yolo-bench/y10_00_base.elf",
+        config.MODEL_PORT_ARTIFACTS / "yolo-bench/yolo_m30.elf",
     ]:
         if alt.is_file():
             return str(alt)

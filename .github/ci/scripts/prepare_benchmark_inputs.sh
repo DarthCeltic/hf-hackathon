@@ -48,18 +48,26 @@ from benchmark_config_helpers import load_config
 cfg = load_config(cfg_path)
 seen = set()
 for model in cfg.get("models", {}).values():
-    for load in model.get("file_loads", []):
+    loads = list(model.get("file_loads", []))
+    for case in model.get("benchmark_cases", []):
+        if isinstance(case, dict):
+            loads.extend(case.get("file_loads", []))
+    for load in loads:
         paths = load.get("paths") or [load.get("path")]
         for path in paths:
             if path and path not in seen:
                 seen.add(path)
                 print(path)
-    accuracy = model.get("accuracy", {})
-    paths = accuracy.get("reference_paths") or [accuracy.get("reference_path")]
-    for path in paths:
-        if path and path not in seen:
-            seen.add(path)
-            print(path)
+    accuracies = [model.get("accuracy", {})]
+    for case in model.get("benchmark_cases", []):
+        if isinstance(case, dict):
+            accuracies.append(case.get("accuracy", {}))
+    for accuracy in accuracies:
+        paths = accuracy.get("reference_paths") or [accuracy.get("reference_path")]
+        for path in paths:
+            if path and path not in seen:
+                seen.add(path)
+                print(path)
 PY
 }
 
@@ -71,6 +79,12 @@ copy_configured_assets() {
     copy_if_exists "${src_root}/${rel}" "${AMP_ROOT}/${rel}"
   done < <(configured_asset_paths)
 }
+
+# Committed deterministic benchmark assets.
+for assets_root in "${REPO_ROOT}"/ported_models/*/assets; do
+  [[ -d "$assets_root" ]] || continue
+  copy_configured_assets "$assets_root"
+done
 
 # Optional local bundle (e.g. zephyr local-artifacts path).
 if [[ -n "${BENCHMARK_ASSETS_DIR:-}" && -d "${BENCHMARK_ASSETS_DIR}" ]]; then
