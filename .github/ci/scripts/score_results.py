@@ -13,6 +13,7 @@ import os
 import re
 import struct
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -73,6 +74,29 @@ def read_dump_bytes(path: Path, offset: int, count: int) -> bytes:
     if len(data) != count:
         raise ValueError(f"short dump read at 0x{offset:x}: got {len(data)} bytes, expected {count}")
     return data
+
+
+def read_dump_text(path: Path, offset: int, count: int, encoding: str = "utf-8") -> str:
+    data = read_dump_bytes(path, offset, count)
+    data = data.split(b"\0", 1)[0]
+    return data.decode(encoding, errors="replace")
+
+
+def normalize_transcript(text: str, mode: str | bool | None = "whitespace") -> str:
+    if mode in (False, "none", "raw"):
+        return text
+    normalized = unicodedata.normalize("NFKC", text).replace("\x00", "")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if mode in (True, None, "whitespace"):
+        return normalized
+    if mode in ("lower", "lowercase", "lower_whitespace"):
+        return normalized.lower()
+    raise ValueError(f"unknown transcript normalization mode {mode!r}")
+
+
+def cell_text(text: str, limit: int = 80) -> str:
+    flat = " ".join(text.split())
+    return (flat[: limit - 1] + "...") if len(flat) > limit else flat
 
 
 def load_uint8_npy(path: Path) -> tuple[tuple[int, ...], bytes]:
@@ -232,6 +256,50 @@ def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: d
                 "accuracy_max_abs": max_abs,
                 "accuracy_mean_abs": mean_abs,
                 "accuracy_reference": rel,
+            }
+
+        if kind in ("transcript", "transcript_exact"):
+            if dump_path is None or not dump_path.is_file():
+                return False, "accuracy check failed: missing dump.bin", metrics
+            offset = int_cfg(acfg["offset"])
+            count = int_cfg(acfg.get("count", acfg.get("max_bytes", 4096)))
+            encoding = str(acfg.get("encoding", "utf-8"))
+            actual = read_dump_text(dump_path, offset, count, encoding=encoding)
+
+            expected_ref = None
+            if "expected_text" in acfg:
+                expected = str(acfg["expected_text"])
+                expected_ref = "inline expected_text"
+            else:
+                ref_paths = acfg.get("expected_text_paths") or acfg.get("reference_paths") or [
+                    acfg.get("expected_text_path") or acfg.get("reference_path")
+                ]
+                ref_paths = [str(path) for path in ref_paths if path]
+                ref_path = resolve_reference(ref_paths)
+                if ref_path is None:
+                    return False, "accuracy check failed: missing transcript reference " + ", ".join(ref_paths), metrics
+                expected = ref_path.read_text(encoding=encoding)
+                expected_ref = str(ref_path)
+                try:
+                    expected_ref = str(ref_path.relative_to(REPO_ROOT))
+                except ValueError:
+                    pass
+
+            mode = acfg.get("normalize", "whitespace")
+            actual_norm = normalize_transcript(actual, mode)
+            expected_norm = normalize_transcript(expected, mode)
+            ok = actual_norm == expected_norm
+            actual_preview = cell_text(actual_norm)
+            expected_preview = cell_text(expected_norm)
+            note = (
+                f"accuracy transcript_exact {'valid' if ok else 'failed'} "
+                f"actual={actual_preview!r} expected={expected_preview!r}"
+            )
+            return ok, note, metrics | {
+                "valid_accuracy": ok,
+                "accuracy_reference": expected_ref,
+                "accuracy_text": actual_norm,
+                "accuracy_expected_text": expected_norm,
             }
 
         return False, f"accuracy check failed: unknown kind {kind}", metrics

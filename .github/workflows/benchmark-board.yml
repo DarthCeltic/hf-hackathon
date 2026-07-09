@@ -89,6 +89,8 @@ jobs:
       has_models: ${{ steps.models.outputs.has_models }}
       unregistered: ${{ steps.models.outputs.unregistered }}
       has_unregistered: ${{ steps.models.outputs.has_unregistered }}
+      uncovered: ${{ steps.models.outputs.uncovered }}
+      has_uncovered: ${{ steps.models.outputs.has_uncovered }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -107,6 +109,7 @@ jobs:
         run: |
           set -euo pipefail
           unregistered=""
+          uncovered=""
           zero_sha="0000000000000000000000000000000000000000"
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             models="$(python3 .github/ci/scripts/changed_benchmark_models.py \
@@ -115,8 +118,10 @@ jobs:
               --head "$PR_HEAD_SHA" \
               --scope changed \
               --format space \
-              --unregistered-out unregistered.txt)"
+              --unregistered-out unregistered.txt \
+              --uncovered-out uncovered.txt)"
             unregistered="$(cat unregistered.txt 2>/dev/null || true)"
+            uncovered="$(cat uncovered.txt 2>/dev/null || true)"
           elif [[ "$EVENT_NAME" == "push" && -n "$PUSH_BEFORE_SHA" && "$PUSH_BEFORE_SHA" != "$zero_sha" ]]; then
             models="$(python3 .github/ci/scripts/changed_benchmark_models.py \
               --target board \
@@ -124,8 +129,10 @@ jobs:
               --head "$PUSH_HEAD_SHA" \
               --scope changed \
               --format space \
-              --unregistered-out unregistered.txt)"
+              --unregistered-out unregistered.txt \
+              --uncovered-out uncovered.txt)"
             unregistered="$(cat unregistered.txt 2>/dev/null || true)"
+            uncovered="$(cat uncovered.txt 2>/dev/null || true)"
           else
             models="$(python3 .github/ci/scripts/benchmark_config_helpers.py \
               --target board \
@@ -134,6 +141,7 @@ jobs:
           fi
           echo "models=$models" >> "$GITHUB_OUTPUT"
           echo "unregistered=$unregistered" >> "$GITHUB_OUTPUT"
+          echo "uncovered=$uncovered" >> "$GITHUB_OUTPUT"
           if [[ -n "$models" ]]; then
             echo "has_models=1" >> "$GITHUB_OUTPUT"
           else
@@ -143,6 +151,11 @@ jobs:
             echo "has_unregistered=1" >> "$GITHUB_OUTPUT"
           else
             echo "has_unregistered=0" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -n "$uncovered" ]]; then
+            echo "has_uncovered=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_uncovered=0" >> "$GITHUB_OUTPUT"
           fi
           {
             echo "### Board model selection"
@@ -155,6 +168,10 @@ jobs:
             if [[ -n "$unregistered" ]]; then
               echo
               echo "New ports without a benchmark entry: \`$unregistered\`"
+            fi
+            if [[ -n "$uncovered" ]]; then
+              echo
+              echo "Changed runtime source not covered by an adequate benchmark row: \`$uncovered\`"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -393,8 +410,10 @@ jobs:
         env:
           HAS_MODELS: ${{ needs.select-board-models.outputs.has_models }}
           HAS_UNREGISTERED: ${{ needs.select-board-models.outputs.has_unregistered }}
+          HAS_UNCOVERED: ${{ needs.select-board-models.outputs.has_uncovered }}
           SELECTED_MODELS: ${{ needs.select-board-models.outputs.models }}
           UNREGISTERED: ${{ needs.select-board-models.outputs.unregistered }}
+          UNCOVERED: ${{ needs.select-board-models.outputs.uncovered }}
           BOARD_RESULT: ${{ needs.board-benchmark.result }}
           BOARD_AUTH_ALLOWED: ${{ needs.authorize-board-run.outputs.allowed }}
           BOARD_AUTH_PERMISSION: ${{ needs.authorize-board-run.outputs.permission }}
@@ -406,7 +425,7 @@ jobs:
           LEADERBOARD_MIN_RELATIVE_IMPROVEMENT: ${{ vars.LEADERBOARD_MIN_RELATIVE_IMPROVEMENT || '0' }}
         run: |
           set -euo pipefail
-          if [[ "$HAS_MODELS" != "1" && "$HAS_UNREGISTERED" != "1" ]]; then
+          if [[ "$HAS_MODELS" != "1" && "$HAS_UNREGISTERED" != "1" && "$HAS_UNCOVERED" != "1" ]]; then
             cat > /tmp/board-comment.md <<EOF
           ## ET-SoC1 board benchmark
 
@@ -428,6 +447,7 @@ jobs:
             --target board \
             --models "$SELECTED_MODELS" \
             --unregistered "$UNREGISTERED" \
+            --uncovered "$UNCOVERED" \
             --title "ET-SoC1 board benchmark" \
             --sha "$GITHUB_SHA" \
             --ref "$GITHUB_REF" \
@@ -443,6 +463,7 @@ jobs:
             --scores-dir board-scores \
             --models "$SELECTED_MODELS" \
             --unregistered "$UNREGISTERED" \
+            --uncovered "$UNCOVERED" \
             --target board \
             --base-ref "$PR_BASE_SHA" \
             --output /tmp/leaderboard-gate.md || true
@@ -482,6 +503,7 @@ jobs:
         env:
           SELECTED_MODELS: ${{ needs.select-board-models.outputs.models }}
           UNREGISTERED: ${{ needs.select-board-models.outputs.unregistered }}
+          UNCOVERED: ${{ needs.select-board-models.outputs.uncovered }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           LEADERBOARD_MIN_RELATIVE_IMPROVEMENT: ${{ vars.LEADERBOARD_MIN_RELATIVE_IMPROVEMENT || '0' }}
         run: |
@@ -489,6 +511,7 @@ jobs:
             --scores-dir board-scores \
             --models "$SELECTED_MODELS" \
             --unregistered "$UNREGISTERED" \
+            --uncovered "$UNCOVERED" \
             --target board \
             --base-ref "$PR_BASE_SHA" \
             --output "$GITHUB_STEP_SUMMARY"
