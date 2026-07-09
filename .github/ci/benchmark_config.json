@@ -167,6 +167,78 @@
       },
       "requires_dncnn_inputs": false
     },
+    "yolo_e2e": {
+      "canonical_variant": "yolo_e2e_m30",
+      "source": "ported_models/yolo_e2e/src/yolo_e2e_m30_argbuf.c",
+      "bench_dir": "yolo-e2e-bench",
+      "manifest": "yolo_e2e_variants.txt",
+      "benchmark_default": false,
+      "score": {
+        "metric": "kernel_wait_s",
+        "label": "End-to-end latency",
+        "higher_is_better": false
+      },
+      "build": {
+        "opt": "-O3",
+        "defines": [
+          "-funroll-loops",
+          "-fno-tree-loop-distribute-patterns",
+          "-DNUM_HARTS=16",
+          "-DACTIVE_HARTS=8u"
+        ]
+      },
+      "mem_size": "0x05000000",
+      "region_size": "0x05000000",
+      "file_loads": [
+        {
+          "address": "0x0",
+          "paths": [
+            "zero2m.bin",
+            "dncnn3-bench/zero2m.bin"
+          ],
+          "required": true
+        },
+        {
+          "address": "0x02000000",
+          "paths": ["yolo-e2e/weights_region.bin"],
+          "required": true
+        },
+        {
+          "address": "0x04A00000",
+          "paths": ["yolo-e2e/web_car_raw_480x640x3_uint8_rgb.bin"],
+          "required": true
+        }
+      ],
+      "dump_size": "0x01D01000",
+      "validation": {
+        "kind": "yolo_real_image_detections",
+        "image": "web_car",
+        "source_shape": [480, 640, 3]
+      },
+      "accuracy": {
+        "kind": "yolo_detections",
+        "offset": "0x01D00000",
+        "max_detections": 64,
+        "reference": "web_car raw RGB expected detections",
+        "expected": [
+          {
+            "class_id": 2,
+            "label": "car",
+            "min_score": 0.55,
+            "box": [4.6, 56.0, 505.5, 273.6],
+            "min_iou": 0.70
+          },
+          {
+            "class_id": 0,
+            "label": "person",
+            "min_score": 0.35,
+            "box": [424.3, 88.6, 511.7, 204.6],
+            "min_iou": 0.60
+          }
+        ]
+      },
+      "requires_dncnn_inputs": false
+    },
     "whisper": {
       "canonical_variant": "w10_00_base",
       "source": "ported_models/whisper/src/whisper_transformer_vpu_argbuf.c",

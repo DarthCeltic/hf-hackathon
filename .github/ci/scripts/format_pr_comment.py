@@ -60,6 +60,10 @@ def is_yolo_image_set_path(path: str) -> bool:
     return path.startswith("ported_models/yolo/src/")
 
 
+def is_yolo_e2e_path(path: str) -> bool:
+    return path.startswith("ported_models/yolo_e2e/src/")
+
+
 def uncovered_note(path: str) -> str:
     if is_whisper_30s_audio_path(path):
         return (
@@ -69,6 +73,11 @@ def uncovered_note(path: str) -> str:
     if is_yolo_image_set_path(path):
         return (
             "YOLO source changed; no configured fixed image-set output-tensor "
+            "benchmark covers it"
+        )
+    if is_yolo_e2e_path(path):
+        return (
+            "YOLO end-to-end source changed; no configured real-image detection "
             "benchmark covers it"
         )
     return "changed runtime source is not built by any configured benchmark row"
@@ -221,8 +230,8 @@ def main() -> int:
             + ". Update the configured benchmark source, add a benchmark row for the new variant, "
             "or keep the change out of the submission. Resident Whisper changes require a "
             "30 s audio/transcript validation row, not just the compact transformer smoke benchmark. "
-            "YOLO changes require a fixed image-set output-tensor validation row, not just the "
-            "constant-output smoke benchmark."
+            "YOLO feature-map changes require a fixed image-set output-tensor validation row, "
+            "and YOLO end-to-end changes require a real-image category detection row."
         )
 
     lines.append("")

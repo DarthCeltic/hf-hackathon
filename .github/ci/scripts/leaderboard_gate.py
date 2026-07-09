@@ -106,6 +106,28 @@ def source_model_root(model_cfg: dict[str, Any]) -> str | None:
     return str(Path(source).parent)
 
 
+def configured_asset_paths(model_cfg: dict[str, Any]) -> set[str]:
+    root = source_model_root(model_cfg)
+    if not root or not root.startswith("ported_models/"):
+        return set()
+
+    rels: set[str] = set()
+    for load in model_cfg.get("file_loads", []):
+        paths = load.get("paths") or [load.get("path")]
+        for path in paths:
+            if path:
+                rels.add(norm(path))
+
+    accuracy = model_cfg.get("accuracy", {})
+    if isinstance(accuracy, dict):
+        paths = accuracy.get("reference_paths") or [accuracy.get("reference_path")]
+        for path in paths:
+            if path:
+                rels.add(norm(path))
+
+    return {norm(f"{root}/assets/{rel}") for rel in rels if rel}
+
+
 def is_model_code_path(path: str) -> bool:
     name = Path(path).name.lower()
     if name in {"readme.md", "model.md", "third_party.md"}:
@@ -151,6 +173,8 @@ def model_submission_changed(
         if artifacts_path and path == artifacts_path:
             return True
         if source and path == source:
+            return True
+        if path in configured_asset_paths(model_cfg):
             return True
         if root and is_under(path, root) and is_model_code_path(path):
             return True
@@ -264,6 +288,10 @@ def is_yolo_image_set_path(path: str) -> bool:
     return path.startswith("ported_models/yolo/src/")
 
 
+def is_yolo_e2e_path(path: str) -> bool:
+    return path.startswith("ported_models/yolo_e2e/src/")
+
+
 def uncovered_note(path: str) -> str:
     if is_whisper_30s_audio_path(path):
         return (
@@ -276,6 +304,12 @@ def uncovered_note(path: str) -> str:
             "YOLO source changed, but no configured fixed image-set output-tensor "
             "benchmark covers it. The constant-output smoke row is not enough "
             "for YOLO fidelity changes."
+        )
+    if is_yolo_e2e_path(path):
+        return (
+            "YOLO end-to-end source changed, but no configured real-image "
+            "detection benchmark covers it. The gate must validate expected "
+            "categories on a fixed image."
         )
     return "Changed runtime source is not built by any configured benchmark row. Add or update a benchmark row before merging."
 
@@ -327,7 +361,8 @@ def main() -> int:
             "CI/scoring-only changes must pass board CI but do not need to improve runtime. "
             "Fidelity-sensitive paths need their model-specific validation row; resident "
             "Whisper changes require a 30 s audio/transcript validation, and YOLO changes "
-            "require a fixed image-set output-tensor validation."
+            "require either the fixed image-set output-tensor validation or the real-image "
+            "detection validation, depending on the port."
         ),
         "",
         "| Model | Metric | PR score | Current best | Verdict | Notes |",

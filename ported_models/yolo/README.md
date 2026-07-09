@@ -8,6 +8,10 @@ four 80x80x16 float32 inputs, sparse float32 weights, and the expected
 4x80x80x16 uint8 output tensor. Regenerate them with
 `scripts/gen_yolo_image_set.py`.
 
+The real-image detector validation lives in `ported_models/yolo_e2e/`. Keep
+this feature-map benchmark for fast kernel work, and use `yolo_e2e` when a
+change needs to prove semantic detections on an image.
+
 The Hugging Face model package should be treated as the external reference
 source. Keep ONNX/input blobs and generated ELFs out of git. The current base is
 `onnx-community/yolov10n` pinned in

@@ -16,5 +16,6 @@ The CI row runs four deterministic 80x80x16 feature-map inputs with preloaded
 weights and compares the full 4x80x80x16 uint8 output tensor against the
 committed reference. The leaderboard metric is kernel wait per image so this
 four-image validation row is not compared against the old one-image smoke time.
+Real-image category validation is covered separately by `ported_models/yolo_e2e`.
 Use the pinned Hugging Face model config/preprocessor metadata for model I/O and
 keep large ONNX artifacts outside git.

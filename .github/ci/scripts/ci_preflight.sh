@@ -171,6 +171,65 @@ assert not yolo_bad_score["passed"] and not yolo_bad_score["valid_accuracy"]
 assert "uint8_npy" in yolo_good_score["valid_note"]
 assert yolo_good_score["kernel_wait_per_image_s"] == 0.0025
 
+yolo_det_offset = int(test_config["models"]["yolo_e2e"]["accuracy"]["offset"], 0)
+yolo_e2e_fields = [
+    0x10500001, 1, 1, 480, 640, 3, 1, 1,
+    1, 0, 0, 1, 0, 0, 0, 0,
+]
+
+
+def yolo_detection_payload(detections):
+    payload = struct.pack("<I", len(detections))
+    for det in detections:
+        payload += struct.pack("<I5f", *det)
+    return payload
+
+
+yolo_det_good = dump_with_summary(
+    yolo_det_offset + 4096,
+    yolo_e2e_fields,
+    [
+        (
+            yolo_det_offset,
+            yolo_detection_payload(
+                [
+                    (2, 0.665, 4.6, 56.0, 505.5, 273.6),
+                    (0, 0.477, 424.3, 88.6, 511.7, 204.6),
+                ]
+            ),
+        )
+    ],
+)
+yolo_det_bad = dump_with_summary(
+    yolo_det_offset + 4096,
+    yolo_e2e_fields,
+    [
+        (
+            yolo_det_offset,
+            yolo_detection_payload(
+                [
+                    (2, 0.20, 4.6, 56.0, 505.5, 273.6),
+                    (16, 0.90, 424.3, 88.6, 511.7, 204.6),
+                ]
+            ),
+        )
+    ],
+)
+yolo_det_good_score = run_score(
+    "yolo_e2e",
+    write_results("yolo_e2e", "yolo_e2e_m30", yolo_det_good),
+    "yolo-e2e-good",
+)
+yolo_det_bad_score = run_score(
+    "yolo_e2e",
+    write_results("yolo_e2e", "yolo_e2e_m30", yolo_det_bad),
+    "yolo-e2e-bad",
+)
+assert yolo_det_good_score["passed"] and yolo_det_good_score["valid_accuracy"]
+assert not yolo_det_bad_score["passed"] and not yolo_det_bad_score["valid_accuracy"]
+assert "yolo_detections valid" in yolo_det_good_score["valid_note"]
+assert "yolo_detections failed" in yolo_det_bad_score["valid_note"]
+
 whisper_expected = 2097152
 whisper_fields = [
     0x57485350, 1, 1, 256, 64, 256, 1, 1,

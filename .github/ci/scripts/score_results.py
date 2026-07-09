@@ -25,6 +25,7 @@ CONFIG_PATH = REPO_ROOT / ".github" / "ci" / "benchmark_config.json"
 DNCNN_MAGIC = 0xD3C11003
 YOLO_MAGIC = 0x10500001
 SUMMARY = struct.Struct("<16I")
+YOLO_DETECTION = struct.Struct("<I5f")
 
 
 def int_cfg(value: int | str) -> int:
@@ -161,6 +162,44 @@ def byte_diff_metrics(actual: bytes, expected: bytes) -> tuple[int, float]:
     return max_abs, mean_abs
 
 
+def box_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0.0 else 0.0
+
+
+def max_box_abs_diff(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    return max(abs(x - y) for x, y in zip(a, b))
+
+
+def read_yolo_detections(path: Path, offset: int, max_detections: int) -> list[dict]:
+    count = struct.unpack("<I", read_dump_bytes(path, offset, 4))[0]
+    if count > max_detections:
+        raise ValueError(f"detection count {count} exceeds configured max {max_detections}")
+    payload = read_dump_bytes(path, offset + 4, count * YOLO_DETECTION.size)
+    detections = []
+    for idx in range(count):
+        class_id, score, x1, y1, x2, y2 = YOLO_DETECTION.unpack_from(payload, idx * YOLO_DETECTION.size)
+        detections.append(
+            {
+                "class_id": int(class_id),
+                "score": float(score),
+                "box": (float(x1), float(y1), float(x2), float(y2)),
+            }
+        )
+    return detections
+
+
 def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: dict | None) -> tuple[bool, str, dict]:
     acfg = mcfg.get("accuracy")
     if not acfg:
@@ -256,6 +295,84 @@ def validate_accuracy(model: str, dump_path: Path | None, mcfg: dict, summary: d
                 "accuracy_max_abs": max_abs,
                 "accuracy_mean_abs": mean_abs,
                 "accuracy_reference": rel,
+            }
+
+        if kind == "yolo_detections":
+            if dump_path is None or not dump_path.is_file():
+                return False, "accuracy check failed: missing dump.bin", metrics
+            offset = int_cfg(acfg["offset"])
+            max_detections = int_cfg(acfg.get("max_detections", 64))
+            detections = read_yolo_detections(dump_path, offset, max_detections)
+            expected = acfg.get("expected", [])
+            if not isinstance(expected, list) or not expected:
+                return False, "accuracy check failed: yolo_detections has no expected entries", metrics
+
+            used: set[int] = set()
+            matches: list[str] = []
+            failures: list[str] = []
+            box_abs_values: list[float] = []
+
+            for exp in expected:
+                class_id = int_cfg(exp["class_id"])
+                label = str(exp.get("label") or f"class_{class_id}")
+                min_score = float(exp.get("min_score", acfg.get("min_score", 0.0)))
+                exp_box = exp.get("box")
+                exp_box_tuple = tuple(float(v) for v in exp_box) if exp_box is not None else None
+
+                candidates = [
+                    (idx, det)
+                    for idx, det in enumerate(detections)
+                    if idx not in used
+                    and int(det["class_id"]) == class_id
+                    and float(det["score"]) >= min_score
+                ]
+                if not candidates:
+                    failures.append(f"{label}: missing class_id={class_id} score>={min_score:.2f}")
+                    continue
+
+                if exp_box_tuple is None:
+                    best_idx, best_det = max(candidates, key=lambda item: float(item[1]["score"]))
+                    used.add(best_idx)
+                    matches.append(f"{label} score={float(best_det['score']):.3f}")
+                    continue
+
+                scored = []
+                for idx, det in candidates:
+                    det_box = det["box"]
+                    iou = box_iou(det_box, exp_box_tuple)
+                    abs_diff = max_box_abs_diff(det_box, exp_box_tuple)
+                    scored.append((iou, -abs_diff, idx, det, abs_diff))
+                iou, neg_abs_diff, best_idx, best_det, abs_diff = max(scored, key=lambda item: (item[0], item[1]))
+                min_iou = float(exp.get("min_iou", acfg.get("min_iou", 0.5)))
+                max_abs_allowed = float(exp.get("max_box_abs", acfg.get("max_box_abs", "inf")))
+                if iou < min_iou:
+                    failures.append(f"{label}: iou={iou:.3f} below {min_iou:.3f}")
+                    continue
+                if abs_diff > max_abs_allowed:
+                    failures.append(f"{label}: box_abs={abs_diff:.2f} above {max_abs_allowed:.2f}")
+                    continue
+                used.add(best_idx)
+                box_abs_values.append(abs_diff)
+                matches.append(
+                    f"{label} score={float(best_det['score']):.3f} iou={iou:.3f} box_abs={abs_diff:.1f}"
+                )
+
+            ok = not failures
+            found = ", ".join(matches) if matches else "none"
+            if failures:
+                found += "; " if found else ""
+                found += "failures: " + "; ".join(failures)
+            note = (
+                f"accuracy yolo_detections {'valid' if ok else 'failed'} "
+                f"count={len(detections)} found={found}"
+            )
+            max_abs = max(box_abs_values) if box_abs_values else None
+            mean_abs = sum(box_abs_values) / len(box_abs_values) if box_abs_values else None
+            return ok, note, metrics | {
+                "valid_accuracy": ok,
+                "accuracy_max_abs": max_abs,
+                "accuracy_mean_abs": mean_abs,
+                "accuracy_reference": acfg.get("reference"),
             }
 
         if kind in ("transcript", "transcript_exact"):
