@@ -23,22 +23,58 @@ Need help? Ask in Discord `#Lab`: <https://discord.gg/CbSA2umxf6>
    exists there. Pin the repo, revision, filename(s), and license; document any
    export, quantization, preprocessing, shape, or packing step needed to
    reproduce the ET-SoC1 artifact.
-5. Add a reusable `.md` recipe or equivalent agent-readable notes. Include the
+5. Satisfy the fully validated model standard below for every leaderboard model
+   touched by the PR.
+6. Add a reusable `.md` recipe or equivalent agent-readable notes. Include the
    task breakdown, instructions or prompt files used, repos/docs/RTL/model files
    you pointed tools at, relevant commands, environment assumptions,
    verification steps, and failures or dead ends that would help another
    participant or agent reproduce the path. A `SKILLS.md`-style file is fine,
    but not required.
-6. Do not edit `data/*.json` or the generated leaderboard block in `README.md`;
+7. Do not edit `data/*.json` or the generated leaderboard block in `README.md`;
    board CI updates those after merge.
-7. Do not commit model blobs, local outputs, secrets, or machine-specific paths.
-8. Run:
+8. Do not commit model blobs, local outputs, secrets, or machine-specific paths.
+9. Run:
 
    ```bash
    bash .github/ci/scripts/ci_preflight.sh
    ```
 
-9. Open the GitHub PR.
+10. Open the GitHub PR.
+
+## Fully Validated Model Standard
+
+A leaderboard submission should prove that the ET-SoC1 board ran the intended
+model, not just a fast kernel with the same name. A valid model submission needs
+all five pieces below.
+
+1. **Provenance.** Declare the upstream reference: Hugging Face repo, pinned
+   commit SHA, exact file names, file hashes, license, and the conversion,
+   export, quantization, preprocessing, or packing commands used to produce the
+   ET-SoC1 artifact. Do not use floating revisions such as `main` for the model
+   identity. If a workload uses synthetic weights, label it as a kernel
+   benchmark rather than a validated model row.
+2. **Host Reference.** Provide a host-side oracle for each benchmark case. The
+   oracle should run the pinned upstream model or the pinned exported artifact
+   with the same preprocessing and quantization path used by the board run. The
+   input, weights or model artifact, and expected output must be deterministic
+   and reproducible from the documented commands.
+3. **Board Correctness.** Compare ET-SoC1 output against the host reference in
+   CI. Tensor/image models should report bounded error metrics such as
+   `max_abs`, `mean_abs`, or `rmse`, and should reject degenerate outputs such
+   as all-zero or constant tensors. Detection models should check expected
+   classes, scores, and boxes. Language models should include a quality metric
+   such as perplexity.
+4. **Model Quality.** Report a task-level quality signal in addition to speed:
+   for example PPL for language models, expected detections for object
+   detection, PSNR/SSIM or denoising improvement for image restoration, or
+   another task-appropriate metric documented in the model card. A faster result
+   that materially degrades quality is not a valid leaderboard improvement.
+5. **Board Performance and Leaderboard Update.** Report the board performance
+   metric used for ranking, the board configuration, commit SHA, run URL, and
+   participant attribution. CI must produce the score artifact, the leaderboard
+   gate must pass, and the main-branch board workflow must update `data/*.json`
+   after merge.
 
 PR board CI selects the configured models touched by the diff and comments with
 the ET-SoC1 board result. After merge, the main-branch board run uses the same
