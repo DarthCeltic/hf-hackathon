@@ -52,9 +52,9 @@
   },
   "models": {
     "dncnn": {
-      "canonical_variant": "int8_tfma_8hart",
-      "source": "ported_models/dncnn/src/dncnn3_tfma_int8.c",
-      "bench_dir": "dncnn3-pmc",
+      "canonical_variant": "vpu_optimized_8hart",
+      "source": "ported_models/dncnn/src/dncnn_vpu_optimized.c",
+      "bench_dir": "dncnn_vpu",
       "manifest": "int8_tfma_variants.txt",
       "full_manifest": "int8_tfma_variants.txt",
       "build": {
