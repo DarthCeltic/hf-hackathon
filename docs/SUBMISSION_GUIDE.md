@@ -62,8 +62,8 @@ models, but they do not need to improve the leaderboard runtime.
 For ELF benchmark models, a passing board score also includes the configured
 dump accuracy gate in `.github/ci/benchmark_config.json`. The current gates
 check the DnCNN output against its uint8 reference hash, check YOLO against
-expected `car` and `person` detections on the fixed `web_car` RGB sample, and
-require resident Whisper source changes to be covered by a 30 s
+expected detections across a five-image static RGB suite, and require resident
+Whisper source changes to be covered by a 30 s
 audio/transcript reference.
 
 For models that run `llama-perplexity`, the same gate also protects quality:

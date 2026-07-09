@@ -48,18 +48,26 @@ from benchmark_config_helpers import load_config
 cfg = load_config(cfg_path)
 seen = set()
 for model in cfg.get("models", {}).values():
-    for load in model.get("file_loads", []):
+    loads = list(model.get("file_loads", []))
+    for case in model.get("benchmark_cases", []):
+        if isinstance(case, dict):
+            loads.extend(case.get("file_loads", []))
+    for load in loads:
         paths = load.get("paths") or [load.get("path")]
         for path in paths:
             if path and path not in seen:
                 seen.add(path)
                 print(path)
-    accuracy = model.get("accuracy", {})
-    paths = accuracy.get("reference_paths") or [accuracy.get("reference_path")]
-    for path in paths:
-        if path and path not in seen:
-            seen.add(path)
-            print(path)
+    accuracies = [model.get("accuracy", {})]
+    for case in model.get("benchmark_cases", []):
+        if isinstance(case, dict):
+            accuracies.append(case.get("accuracy", {}))
+    for accuracy in accuracies:
+        paths = accuracy.get("reference_paths") or [accuracy.get("reference_path")]
+        for path in paths:
+            if path and path not in seen:
+                seen.add(path)
+                print(path)
 PY
 }
 

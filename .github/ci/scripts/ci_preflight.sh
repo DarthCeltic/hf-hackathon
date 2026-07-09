@@ -93,6 +93,24 @@ def write_results(model: str, variant: str, dump: bytes) -> Path:
     return run_dir
 
 
+def write_case_results(model: str, variant: str, case_dumps: list[tuple[str, bytes]]) -> Path:
+    run_dir = tmp / f"results-{model}-cases"
+    rows = [
+        "index\tsuite\tmodel\tcase\tvariant\tstatus\trc\telapsed_s\tkernel_wait_s\temu_cycle_last\tlog\tdump\tnote"
+    ]
+    for idx, (case, dump) in enumerate(case_dumps, start=1):
+        job = run_dir / "jobs" / f"{idx:04d}_smoke_{model}_{case}_{variant}"
+        job.mkdir(parents=True, exist_ok=True)
+        (job / "run.log").write_text("Kernel wait seconds: 0.010000\n")
+        (job / "dump.bin").write_bytes(dump)
+        rows.append(
+            f"{idx}\tsmoke\t{model}\t{case}\t{variant}\tpass\t0\t1.000\t0.010000\t\t"
+            f"{(job / 'run.log').relative_to(run_dir)}\t{(job / 'dump.bin').relative_to(run_dir)}\t"
+        )
+    (run_dir / "results.tsv").write_text("\n".join(rows) + "\n")
+    return run_dir
+
+
 def dump_with_summary(size: int, fields: list[int], writes: list[tuple[int, bytes]]) -> bytes:
     data = bytearray(size)
     data[0x1000:0x1000 + SUMMARY.size] = SUMMARY.pack(*fields)
@@ -142,7 +160,8 @@ assert dncnn_good_score["passed"] and dncnn_good_score["valid_accuracy"]
 assert not dncnn_bad_score["passed"] and not dncnn_bad_score["valid_accuracy"]
 assert hashlib.sha256(dncnn_ref).hexdigest()[:12] in dncnn_good_score["valid_note"]
 
-yolo_det_offset = int(test_config["models"]["yolo"]["accuracy"]["offset"], 0)
+yolo_cases = test_config["models"]["yolo"]["benchmark_cases"]
+yolo_det_offset = int(yolo_cases[0]["accuracy"]["offset"], 0)
 yolo_fields = [
     0x10500001, 1, 1, 480, 640, 3, 1, 1,
     1, 0, 0, 1, 0, 0, 0, 0,
@@ -156,50 +175,43 @@ def yolo_detection_payload(detections):
     return payload
 
 
-yolo_det_good = dump_with_summary(
-    yolo_det_offset + 4096,
-    yolo_fields,
-    [
-        (
-            yolo_det_offset,
-            yolo_detection_payload(
-                [
-                    (2, 0.665, 4.6, 56.0, 505.5, 273.6),
-                    (0, 0.477, 424.3, 88.6, 511.7, 204.6),
-                ]
-            ),
-        )
-    ],
-)
-yolo_det_bad = dump_with_summary(
-    yolo_det_offset + 4096,
-    yolo_fields,
-    [
-        (
-            yolo_det_offset,
-            yolo_detection_payload(
-                [
-                    (2, 0.20, 4.6, 56.0, 505.5, 273.6),
-                    (16, 0.90, 424.3, 88.6, 511.7, 204.6),
-                ]
-            ),
-        )
-    ],
-)
+def yolo_case_dump(case, *, fail_first=False):
+    detections = []
+    for idx, exp in enumerate(case["accuracy"]["expected"]):
+        score = float(exp.get("min_score", 0.5)) + 0.10
+        class_id = int(exp["class_id"])
+        if fail_first and idx == 0:
+            score = max(0.0, float(exp.get("min_score", 0.5)) - 0.20)
+        detections.append((class_id, score, *[float(v) for v in exp["box"]]))
+    return dump_with_summary(
+        yolo_det_offset + 4096,
+        yolo_fields,
+        [(yolo_det_offset, yolo_detection_payload(detections))],
+    )
+
+
+yolo_det_good_cases = [
+    (case["name"], yolo_case_dump(case))
+    for case in yolo_cases
+]
+yolo_det_bad_cases = [
+    (case["name"], yolo_case_dump(case, fail_first=(idx == 1)))
+    for idx, case in enumerate(yolo_cases)
+]
 yolo_det_good_score = run_score(
     "yolo",
-    write_results("yolo", "yolo_m30", yolo_det_good),
+    write_case_results("yolo", "yolo_m30", yolo_det_good_cases),
     "yolo-good",
 )
 yolo_det_bad_score = run_score(
     "yolo",
-    write_results("yolo", "yolo_m30", yolo_det_bad),
+    write_case_results("yolo", "yolo_m30", yolo_det_bad_cases),
     "yolo-bad",
 )
 assert yolo_det_good_score["passed"] and yolo_det_good_score["valid_accuracy"]
 assert not yolo_det_bad_score["passed"] and not yolo_det_bad_score["valid_accuracy"]
-assert "yolo_detections valid" in yolo_det_good_score["valid_note"]
-assert "yolo_detections failed" in yolo_det_bad_score["valid_note"]
+assert "5/5 YOLO image cases valid" in yolo_det_good_score["valid_note"]
+assert "coco_cat_524280" in yolo_det_bad_score["valid_note"]
 
 whisper_expected = 2097152
 whisper_fields = [

@@ -1,5 +1,5 @@
 /*
- * YOLOv10n M30 - end-to-end detector path for the fixed web_car sample.
+ * YOLOv10n M30 - end-to-end detector path for fixed 480x640 RGB samples.
  *
  * Runs on-chip raw-RGB preprocessing, YOLOv10n backbone/neck/head, DFL decode,
  * class sigmoid, thresholding, and class-aware NMS. The host reads the compact
@@ -19,7 +19,7 @@
 #define INPUT_OFFSET        0x00010000u
 #define RAW_INPUT_OFFSET    0x04A00000u   /* uint8 RGB [SH, SW, 3], HWC, host-loaded */
 #define DETECTIONS_OFFSET   0x01D00000u   /* host reads small detection list here */
-#define SRC_H               480u           /* hard-coded for web_car.jpg (640x480) */
+#define SRC_H               480u           /* hard-coded for 640x480 RGB inputs */
 #define SRC_W               640u
 #define DST_H               288u
 #define DST_W               512u

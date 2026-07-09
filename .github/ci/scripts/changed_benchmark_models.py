@@ -226,14 +226,23 @@ def configured_asset_paths(model_cfg: dict[str, Any]) -> set[str]:
         return set()
 
     rels: set[str] = set()
-    for load in model_cfg.get("file_loads", []):
+    loads = list(model_cfg.get("file_loads", []))
+    for case in model_cfg.get("benchmark_cases", []):
+        if isinstance(case, dict):
+            loads.extend(case.get("file_loads", []))
+    for load in loads:
         paths = load.get("paths") or [load.get("path")]
         for path in paths:
             if path:
                 rels.add(norm(path))
 
-    accuracy = model_cfg.get("accuracy", {})
-    if isinstance(accuracy, dict):
+    accuracies = [model_cfg.get("accuracy", {})]
+    for case in model_cfg.get("benchmark_cases", []):
+        if isinstance(case, dict):
+            accuracies.append(case.get("accuracy", {}))
+    for accuracy in accuracies:
+        if not isinstance(accuracy, dict):
+            continue
         paths = accuracy.get("reference_paths") or [accuracy.get("reference_path")]
         for path in paths:
             if path:
@@ -282,17 +291,29 @@ def model_satisfies_validation(model_cfg: dict[str, Any], requirement: str | Non
         return True
     if requirement == YOLO_REAL_IMAGE_DETECTIONS_VALIDATION:
         validation = model_cfg.get("validation", {})
-        accuracy = model_cfg.get("accuracy", {})
-        if not isinstance(validation, dict) or not isinstance(accuracy, dict):
+        if not isinstance(validation, dict):
             return False
         if validation.get("kind") != YOLO_REAL_IMAGE_DETECTIONS_VALIDATION:
             return False
-        if accuracy.get("kind") != "yolo_detections":
+        cases = model_cfg.get("benchmark_cases", [])
+        if not isinstance(cases, list) or not cases:
             return False
-        expected = accuracy.get("expected", [])
-        if not isinstance(expected, list):
+        try:
+            min_image_count = int(validation.get("min_image_count", 5))
+        except (TypeError, ValueError):
             return False
-        return len(expected) >= 1
+        valid_cases = 0
+        for case in cases:
+            if not isinstance(case, dict) or not case.get("name"):
+                continue
+            accuracy = case.get("accuracy", {})
+            if not isinstance(accuracy, dict) or accuracy.get("kind") != "yolo_detections":
+                continue
+            expected = accuracy.get("expected", [])
+            if not isinstance(expected, list) or not expected:
+                continue
+            valid_cases += 1
+        return valid_cases >= min_image_count
     if requirement != WHISPER_30S_AUDIO_VALIDATION:
         return False
 

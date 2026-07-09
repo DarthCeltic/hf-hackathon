@@ -179,11 +179,52 @@ def model_file_loads(cfg: dict, model: str) -> list[dict]:
     return list(cfg["models"][model].get("file_loads", default))
 
 
-def resolve_file_loads(cfg: dict, model: str, amp_root: str | Path) -> tuple[list[dict], list[str]]:
+def model_benchmark_cases(cfg: dict, model: str) -> list[dict]:
+    cases = cfg["models"][model].get("benchmark_cases", [])
+    return [case for case in cases if isinstance(case, dict) and case.get("name")]
+
+
+def benchmark_case(cfg: dict, model: str, case_name: str | None) -> dict | None:
+    if not case_name:
+        return None
+    for case in model_benchmark_cases(cfg, model):
+        if str(case.get("name")) == str(case_name):
+            return case
+    return None
+
+
+def merge_file_loads(base: list[dict], overrides: list[dict]) -> list[dict]:
+    merged = [dict(item) for item in base]
+    by_address = {str(item["address"]): idx for idx, item in enumerate(merged) if "address" in item}
+    for override in overrides:
+        item = dict(override)
+        address = str(item["address"])
+        if address in by_address:
+            merged[by_address[address]] = item
+        else:
+            by_address[address] = len(merged)
+            merged.append(item)
+    return merged
+
+
+def case_file_loads(cfg: dict, model: str, case_name: str | None = None) -> list[dict]:
+    loads = model_file_loads(cfg, model)
+    case = benchmark_case(cfg, model, case_name)
+    if case and isinstance(case.get("file_loads"), list):
+        loads = merge_file_loads(loads, case["file_loads"])
+    return loads
+
+
+def resolve_file_loads(
+    cfg: dict,
+    model: str,
+    amp_root: str | Path,
+    case_name: str | None = None,
+) -> tuple[list[dict], list[str]]:
     root = Path(amp_root)
     resolved: list[dict] = []
     missing: list[str] = []
-    for load in model_file_loads(cfg, model):
+    for load in case_file_loads(cfg, model, case_name):
         address = str(load["address"])
         paths = load.get("paths")
         if not paths:

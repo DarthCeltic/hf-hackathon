@@ -112,14 +112,23 @@ def configured_asset_paths(model_cfg: dict[str, Any]) -> set[str]:
         return set()
 
     rels: set[str] = set()
-    for load in model_cfg.get("file_loads", []):
+    loads = list(model_cfg.get("file_loads", []))
+    for case in model_cfg.get("benchmark_cases", []):
+        if isinstance(case, dict):
+            loads.extend(case.get("file_loads", []))
+    for load in loads:
         paths = load.get("paths") or [load.get("path")]
         for path in paths:
             if path:
                 rels.add(norm(path))
 
-    accuracy = model_cfg.get("accuracy", {})
-    if isinstance(accuracy, dict):
+    accuracies = [model_cfg.get("accuracy", {})]
+    for case in model_cfg.get("benchmark_cases", []):
+        if isinstance(case, dict):
+            accuracies.append(case.get("accuracy", {}))
+    for accuracy in accuracies:
+        if not isinstance(accuracy, dict):
+            continue
         paths = accuracy.get("reference_paths") or [accuracy.get("reference_path")]
         for path in paths:
             if path:
@@ -304,9 +313,9 @@ def uncovered_note(path: str) -> str:
         )
     if is_yolo_real_image_path(path):
         return (
-            "YOLO source changed, but no configured real-image "
+            "YOLO source changed, but no configured five-image real-image "
             "detection benchmark covers it. The gate must validate expected "
-            "categories on a fixed image."
+            "categories across the fixed image suite."
         )
     return "Changed runtime source is not built by any configured benchmark row. Add or update a benchmark row before merging."
 
@@ -358,7 +367,7 @@ def main() -> int:
             "CI/scoring-only changes must pass board CI but do not need to improve runtime. "
             "Fidelity-sensitive paths need their model-specific validation row; resident "
             "Whisper changes require a 30 s audio/transcript validation, and YOLO changes "
-            "require real-image detection validation."
+            "require five-image real-image detection validation."
         ),
         "",
         "| Model | Metric | PR score | Current best | Verdict | Notes |",

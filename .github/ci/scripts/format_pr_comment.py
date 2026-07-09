@@ -68,7 +68,7 @@ def uncovered_note(path: str) -> str:
         )
     if is_yolo_real_image_path(path):
         return (
-            "YOLO source changed; no configured real-image category detection "
+            "YOLO source changed; no configured five-image category detection "
             "benchmark covers it"
         )
     return "changed runtime source is not built by any configured benchmark row"
@@ -221,7 +221,7 @@ def main() -> int:
             + ". Update the configured benchmark source, add a benchmark row for the new variant, "
             "or keep the change out of the submission. Resident Whisper changes require a "
             "30 s audio/transcript validation row, not just the compact transformer smoke benchmark. "
-            "YOLO changes require a real-image category detection row."
+            "YOLO changes require a five-image category detection row."
         )
 
     lines.append("")

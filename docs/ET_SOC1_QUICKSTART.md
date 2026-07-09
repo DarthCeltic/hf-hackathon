@@ -254,7 +254,7 @@ rsync -aq \
   "$BOARD_SSH:$REMOTE_MODELS/yolo-bench/"
 rsync -aq \
   "$BENCHMARK_ARTIFACT_ROOT/yolo/weights_region.bin" \
-  "$BENCHMARK_ARTIFACT_ROOT/yolo/web_car_raw_480x640x3_uint8_rgb.bin" \
+  "$BENCHMARK_ARTIFACT_ROOT/yolo/"*_raw_480x640x3_uint8_rgb.bin \
   "$BOARD_SSH:$REMOTE_MODELS/yolo/"
 ```
 
