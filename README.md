@@ -23,7 +23,7 @@ Results are from real ET-SoC1 silicon via the main-branch board workflow. Each m
 | Model | Best participant | Variant | Metric | Score | PPL | Run |
 |-------|------------------|---------|--------|-------|-----|-----|
 | dncnn | karabambus | `int8_tfma_8hart` | Kernel wait | 0.010588s | - | [26042ad](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28862225483) |
-| yolo | - | `-` | Mean end-to-end latency | - | - | - |
+| yolo | Afonso Oliveira | `yolo_m30` | Mean end-to-end latency | 4.703488s | - | [2612bd0](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29021228645) |
 | whisper | alien1403 | `w10_00_base` | Kernel wait | 0.037440s | - | [5323435](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28875691389) |
 | lfm25 | AFOliveira | `LFM2.5-1.2B-Instruct-Q8_0` | Decode tokens/s | 3.12 | 21.70 (+/- 4.45) | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |
 | llama32_1b | AFOliveira | `Llama-3.2-1B-Instruct-Q8_0` | Decode tokens/s | 13.58 | 15.31 (+/- 2.89) | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |

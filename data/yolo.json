@@ -2,6 +2,26 @@
   "model": "yolo",
   "metric": "kernel_wait_s",
   "lower_is_better": true,
-  "updated_at": "2026-07-09T00:00:00+00:00",
-  "entries": []
+  "updated_at": "2026-07-09T13:28:20.314311+00:00",
+  "entries": [
+    {
+      "team": "Afonso Oliveira",
+      "variant": "yolo_m30",
+      "kernel_wait_s": 4.703488,
+      "kernel_wait_per_image_s": 4.703488,
+      "tokens_per_second": null,
+      "prompt_tokens_per_second": null,
+      "prompt_tokens": null,
+      "completion_tokens": null,
+      "total_tokens": null,
+      "perplexity": null,
+      "perplexity_error": null,
+      "perplexity_tokens": null,
+      "perplexity_prompt_tokens_per_second": null,
+      "sha": "2612bd06c28901b84e4e9fbee94d64d1503a77d8",
+      "ref": "refs/heads/main",
+      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29021228645",
+      "scored_at": "2026-07-09T13:26:50.478143+00:00"
+    }
+  ]
 }
