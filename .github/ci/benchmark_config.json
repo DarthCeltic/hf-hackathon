@@ -8,14 +8,6 @@
     "outer_timeout_s": 660,
     "comment": "Real silicon via PCIe on a self-hosted ET board runner.",
     "models": {
-      "dncnn": {
-        "defines": [
-          "-fno-tree-loop-distribute-patterns",
-          "-DNUM_HARTS=16",
-          "-DACTIVE_HARTS=8",
-          "-DBENCH_THREAD0_ONLY=1"
-        ]
-      },
       "yolo": {
         "defines": [
           "-funroll-loops",
@@ -32,13 +24,6 @@
     "launcher_timeout_s": 10800,
     "outer_timeout_s": 10900,
     "models": {
-      "dncnn": {
-        "defines": [
-          "-fno-tree-loop-distribute-patterns",
-          "-DACTIVE_HARTS=1",
-          "-DBENCH_THREAD0_ONLY=1"
-        ]
-      },
       "yolo": {
         "defines": [
           "-funroll-loops",
@@ -51,55 +36,6 @@
     }
   },
   "models": {
-    "dncnn": {
-      "canonical_variant": "int8_tfma_8hart",
-      "source": "ported_models/dncnn/src/dncnn3_tfma_int8.c",
-      "bench_dir": "dncnn3-pmc",
-      "manifest": "int8_tfma_variants.txt",
-      "full_manifest": "int8_tfma_variants.txt",
-      "build": {
-        "opt": "-O3",
-        "defines": [
-          "-fno-tree-loop-distribute-patterns",
-          "-DBENCH_THREAD0_ONLY=1"
-        ]
-      },
-      "file_loads": [
-        {
-          "address": "0x0",
-          "paths": [
-            "zero2m.bin",
-            "dncnn3-bench/zero2m.bin"
-          ],
-          "required": true
-        },
-        {
-          "address": "0x2000",
-          "paths": [
-            "dncnn3_input.bin",
-            "dncnn3-bench/dncnn3_input.bin"
-          ],
-          "required": true
-        },
-        {
-          "address": "0x4000",
-          "paths": [
-            "dncnn3_weights.bin",
-            "dncnn3-bench/dncnn3_weights.bin"
-          ],
-          "required": true
-        }
-      ],
-      "dump_magic": "0xD3C11003",
-      "dump_size": "0x12000",
-      "accuracy": {
-        "kind": "sha256",
-        "offset": "0x10000",
-        "count": 4096,
-        "expected_sha256": "78aacbc3fb34efb8ffa5467b931291ec2bdf5e19564fc45fe97b5affbc893dc6"
-      },
-      "requires_dncnn_inputs": true
-    },
     "yolo": {
       "canonical_variant": "yolo_m30",
       "source": "ported_models/yolo/src/yolo_m30_argbuf.c",
@@ -128,7 +64,7 @@
           "address": "0x0",
           "paths": [
             "zero2m.bin",
-            "dncnn3-bench/zero2m.bin"
+            "common/zero2m.bin"
           ],
           "required": true
         },
@@ -333,8 +269,7 @@
             "min_iou": 0.60
           }
         ]
-      },
-      "requires_dncnn_inputs": false
+      }
     },
     "lfm25": {
       "config": "ported_models/llama_cpp_et/benchmarks/lfm25.json"
