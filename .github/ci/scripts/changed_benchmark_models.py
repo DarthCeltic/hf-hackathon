@@ -69,14 +69,7 @@ RUNTIME_CODE_SUFFIXES = {
 }
 
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
-WHISPER_30S_AUDIO_VALIDATION = "whisper_30s_audio"
 YOLO_REAL_IMAGE_DETECTIONS_VALIDATION = "yolo_real_image_detections"
-WHISPER_TRANSCRIPT_ACCURACY_KINDS = {
-    "transcript",
-    "transcript_exact",
-    "wer",
-    "cer",
-}
 
 
 def norm(path: str | Path) -> str:
@@ -270,17 +263,8 @@ def is_runtime_code_path(path: str) -> bool:
 
 
 def required_validation_for_path(path: str) -> str | None:
-    """Return an extra validation requirement for fidelity-sensitive paths.
-
-    The compact Whisper leaderboard row is a transformer-shaped smoke kernel.
-    Resident Whisper sources are the real audio path, so changes there should
-    only be considered covered by a benchmark row that exercises a 30 s audio
-    transcript/fidelity test.
-    """
+    """Return an extra validation requirement for fidelity-sensitive paths."""
     path = norm(path)
-    name = Path(path).name
-    if is_under(path, "ported_models/whisper/src") and name.startswith("whisper_resident_"):
-        return WHISPER_30S_AUDIO_VALIDATION
     if is_under(path, "ported_models/yolo/src"):
         return YOLO_REAL_IMAGE_DETECTIONS_VALIDATION
     return None
@@ -314,32 +298,6 @@ def model_satisfies_validation(model_cfg: dict[str, Any], requirement: str | Non
                 continue
             valid_cases += 1
         return valid_cases >= min_image_count
-    if requirement != WHISPER_30S_AUDIO_VALIDATION:
-        return False
-
-    validations = []
-    validation = model_cfg.get("validation")
-    if isinstance(validation, dict):
-        validations.append(validation)
-    validation_tests = model_cfg.get("validation_tests", [])
-    if isinstance(validation_tests, list):
-        validations.extend(item for item in validation_tests if isinstance(item, dict))
-
-    for item in validations:
-        if item.get("kind") != WHISPER_30S_AUDIO_VALIDATION:
-            continue
-        try:
-            if float(item.get("audio_seconds", 0)) >= 30.0:
-                return True
-        except (TypeError, ValueError):
-            continue
-
-    accuracy = model_cfg.get("accuracy", {})
-    if isinstance(accuracy, dict) and accuracy.get("kind") in WHISPER_TRANSCRIPT_ACCURACY_KINDS:
-        try:
-            return float(accuracy.get("audio_seconds", 0)) >= 30.0
-        except (TypeError, ValueError):
-            return False
     return False
 
 
@@ -557,8 +515,7 @@ def main() -> int:
         default="",
         help=(
             "Write space-separated changed runtime source files not covered by "
-            "an adequate benchmark row. Some paths have extra validation "
-            "requirements, e.g. resident Whisper needs a 30 s audio test."
+            "an adequate benchmark row. Some paths have extra validation requirements."
         ),
     )
     args = parser.parse_args()

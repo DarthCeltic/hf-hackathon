@@ -42,20 +42,4 @@ download_model \
   "config.json" \
   "preprocessor_config.json"
 
-download_model \
-  "whisper-tiny.en" \
-  "openai/whisper-tiny.en" \
-  "87c7102498dcde7456f24cfd30239ca606ed9063" \
-  "whisper" \
-  "model.safetensors" \
-  "config.json" \
-  "generation_config.json" \
-  "preprocessor_config.json" \
-  "tokenizer.json" \
-  "tokenizer_config.json" \
-  "vocab.json" \
-  "merges.txt" \
-  "normalizer.json" \
-  "special_tokens_map.json"
-
 echo "Hugging Face references ready under $out"
