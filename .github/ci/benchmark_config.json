@@ -47,10 +47,14 @@
         ]
       },
       "yolo": {
-        "defines": ["-DYOLO_PASSES=1"]
+        "defines": [
+          "-DYOLO_PASSES=1"
+        ]
       },
       "whisper": {
-        "defines": ["-DDEPTH_PASSES=1"]
+        "defines": [
+          "-DDEPTH_PASSES=1"
+        ]
       }
     }
   },
@@ -71,17 +75,26 @@
       "file_loads": [
         {
           "address": "0x0",
-          "paths": ["zero2m.bin", "dncnn3-bench/zero2m.bin"],
+          "paths": [
+            "zero2m.bin",
+            "dncnn3-bench/zero2m.bin"
+          ],
           "required": true
         },
         {
           "address": "0x2000",
-          "paths": ["dncnn3_input.bin", "dncnn3-bench/dncnn3_input.bin"],
+          "paths": [
+            "dncnn3_input.bin",
+            "dncnn3-bench/dncnn3_input.bin"
+          ],
           "required": true
         },
         {
           "address": "0x4000",
-          "paths": ["dncnn3_weights.bin", "dncnn3-bench/dncnn3_weights.bin"],
+          "paths": [
+            "dncnn3_weights.bin",
+            "dncnn3-bench/dncnn3_weights.bin"
+          ],
           "required": true
         }
       ],
@@ -103,12 +116,17 @@
       "full_manifest": "yolo_100_variants.txt",
       "build": {
         "opt": "-O3",
-        "defines": ["-DYOLO_PASSES=1"]
+        "defines": [
+          "-DYOLO_PASSES=1"
+        ]
       },
       "file_loads": [
         {
           "address": "0x0",
-          "paths": ["zero2m.bin", "dncnn3-bench/zero2m.bin"],
+          "paths": [
+            "zero2m.bin",
+            "dncnn3-bench/zero2m.bin"
+          ],
           "required": true
         }
       ],
@@ -131,12 +149,17 @@
       "full_manifest": "whisper_100_variants.txt",
       "build": {
         "opt": "-O3",
-        "defines": ["-DDEPTH_PASSES=1"]
+        "defines": [
+          "-DDEPTH_PASSES=1"
+        ]
       },
       "file_loads": [
         {
           "address": "0x0",
-          "paths": ["zero2m.bin", "dncnn3-bench/zero2m.bin"],
+          "paths": [
+            "zero2m.bin",
+            "dncnn3-bench/zero2m.bin"
+          ],
           "required": true
         }
       ],
@@ -194,6 +217,9 @@
     },
     "deepseek_r1_15b": {
       "config": "ported_models/llama_cpp_et/benchmarks/deepseek_r1_15b.json"
+    },
+    "smolvlm_256m": {
+      "config": "ported_models/llama_cpp_et/benchmarks/smolvlm_256m.json"
     }
   }
 }

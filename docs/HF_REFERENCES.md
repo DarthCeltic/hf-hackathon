@@ -29,3 +29,4 @@ For new models or updates to existing models:
 2. Pin the exact revision and filename(s).
 3. Record the upstream model license.
 4. Document any export, quantization, packing, preprocessing, or shape changes.
+| `smolvlm_256m` | `ggml-org/SmolVLM-256M-Instruct-GGUF` | `b9e4379657e1450d04d02eec8e345667265b0a00` | `apache-2.0` | `SmolVLM-256M-Instruct-Q8_0.gguf`, `mmproj-SmolVLM-256M-Instruct-Q8_0.gguf` |
