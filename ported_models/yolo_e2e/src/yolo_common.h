@@ -193,7 +193,7 @@ static void maxpool_fp32(const float *in, float *out,
     FENCE; \
 } while (0)
 
-/* -- multi-hart helpers: 8 T0 compute harts (even hart_id), 8 T1 idle harts -- */
+/* -- multi-hart helpers -- */
 #include "erbium/isa/barriers.h"
 #include "erbium/isa/fcc.h"
 #include "erbium/isa/flb.h"
@@ -203,7 +203,16 @@ static void maxpool_fp32(const float *in, float *out,
 #define YOLO_RESERVE_MINION0 0
 #endif
 
-#if YOLO_RESERVE_MINION0
+#ifdef BENCH_THREAD0_ONLY
+#define MH_T0_MASK    ((1u << ACTIVE_HARTS) - 1u)
+#define MH_T1_MASK    0u
+#define MH_TOTAL      ACTIVE_HARTS
+#define MH_NUM_T0     ACTIVE_HARTS
+static inline int      mh_is_active_hart(uint32_t hid) { (void)hid; return get_thread_id() == 0u && get_minion_id() < ACTIVE_HARTS; }
+static inline uint32_t mh_t0_idx(uint32_t hid) { (void)hid; return get_minion_id(); }
+static inline int      mh_is_t0(uint32_t hid) { return mh_is_active_hart(hid); }
+static inline int      mh_is_leader(uint32_t hid) { (void)hid; return get_thread_id() == 0u && get_minion_id() == 0u; }
+#elif YOLO_RESERVE_MINION0
 #define MH_T0_MASK    0xFEu
 #define MH_T1_MASK    0xFEu
 #define MH_TOTAL      14u
@@ -223,7 +232,9 @@ static inline uint32_t mh_t0_idx(uint32_t hid) { return hid >> 1u; }
 static inline int      mh_is_t0 (uint32_t hid) { return (hid & 1u) == 0u; }
 #endif
 
+#ifndef BENCH_THREAD0_ONLY
 static inline int      mh_is_leader(uint32_t hid) { return hid == MH_LEADER_HART; }
+#endif
 
 #define MH_BARRIER() do { \
     FENCE; WAIT_CACHEOPS; \

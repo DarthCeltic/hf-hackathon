@@ -184,7 +184,8 @@
           "-funroll-loops",
           "-fno-tree-loop-distribute-patterns",
           "-DNUM_HARTS=16",
-          "-DACTIVE_HARTS=8u"
+          "-DACTIVE_HARTS=8u",
+          "-DBENCH_THREAD0_ONLY=1"
         ]
       },
       "mem_size": "0x05000000",
