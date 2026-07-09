@@ -9,7 +9,7 @@ Submit through GitHub PRs against:
 
 The Hugging Face repo is a read-only mirror. Do not submit hackathon PRs there.
 
-Need help? Ask in Discord `#Lab`: <https://discord.gg/CbSA2umxf6>
+Need help? Ask in Discord `#community-lab`: <https://discord.gg/CbSA2umxf6>
 
 ## PR Checklist
 

@@ -107,7 +107,7 @@ The model repo is the technical home for examples, docs, benchmark artifacts, an
 
 ## 💬 Need help?
 
-Join Discord and ask in `#Lab`:
+Join Discord and ask in `#community-lab`:
 
 https://discord.gg/CbSA2umxf6
 
