@@ -244,7 +244,7 @@ def beats_baseline(value: float, baseline: float, higher: bool, min_relative: fl
 def fmt_metric(value: float | int | None, metric: str) -> str:
     if value is None:
         return "-"
-    if metric == "kernel_wait_s":
+    if metric in {"kernel_wait_s", "kernel_wait_per_image_s"}:
         return f"{float(value):.6f}s"
     if metric.endswith("tokens_per_second") or metric == "tokens_per_second":
         return f"{float(value):.4f}"

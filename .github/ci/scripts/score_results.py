@@ -328,6 +328,20 @@ def validate_dump(model: str, dump_path: Path | None, magic_cfg: str | None) -> 
     return True, "dump valid"
 
 
+def benchmark_image_count(mcfg: dict) -> int | None:
+    for section in ("accuracy", "validation"):
+        cfg = mcfg.get(section, {})
+        if not isinstance(cfg, dict) or "image_count" not in cfg:
+            continue
+        try:
+            value = int(cfg["image_count"])
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
 def find_job_dir(results_dir: Path, model: str, variant: str) -> Path | None:
     jobs = results_dir / "jobs"
     if not jobs.is_dir():
@@ -397,12 +411,21 @@ def score_from_results(
 
     score_status = "pass" if passed else (status if status and status != "pass" else "fail")
 
+    kernel_wait_value = float(kernel_wait) if kernel_wait else None
+    image_count = benchmark_image_count(mcfg)
+    kernel_wait_per_image = (
+        kernel_wait_value / image_count
+        if kernel_wait_value is not None and image_count
+        else None
+    )
+
     return {
         "model": model,
         "variant": variant,
         "status": score_status,
         "passed": passed,
-        "kernel_wait_s": float(kernel_wait) if kernel_wait else None,
+        "kernel_wait_s": kernel_wait_value,
+        "kernel_wait_per_image_s": kernel_wait_per_image,
         "tokens_per_second": None,
         "prompt_tokens_per_second": None,
         "prompt_tokens": None,
@@ -442,6 +465,7 @@ def fail_payload(
         "status": status,
         "passed": False,
         "kernel_wait_s": None,
+        "kernel_wait_per_image_s": None,
         "tokens_per_second": None,
         "prompt_tokens_per_second": None,
         "prompt_tokens": None,

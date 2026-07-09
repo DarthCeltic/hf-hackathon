@@ -90,7 +90,7 @@ def fmt_score(model: str, score: dict) -> tuple[str, str]:
     value = score.get(metric)
     if value is None:
         return label, "—"
-    if metric == "kernel_wait_s":
+    if metric in {"kernel_wait_s", "kernel_wait_per_image_s"}:
         return label, f"{value:.6f}s"
     if metric.endswith("tokens_per_second") or metric == "tokens_per_second":
         return label, f"{value:.2f}"

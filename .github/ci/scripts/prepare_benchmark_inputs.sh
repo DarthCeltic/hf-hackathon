@@ -72,6 +72,12 @@ copy_configured_assets() {
   done < <(configured_asset_paths)
 }
 
+# Committed deterministic benchmark assets.
+for assets_root in "${REPO_ROOT}"/ported_models/*/assets; do
+  [[ -d "$assets_root" ]] || continue
+  copy_configured_assets "$assets_root"
+done
+
 # Optional local bundle (e.g. zephyr local-artifacts path).
 if [[ -n "${BENCHMARK_ASSETS_DIR:-}" && -d "${BENCHMARK_ASSETS_DIR}" ]]; then
   copy_configured_assets "${BENCHMARK_ASSETS_DIR}"

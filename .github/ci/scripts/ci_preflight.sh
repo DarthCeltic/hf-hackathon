@@ -151,52 +151,25 @@ assert dncnn_good_score["passed"] and dncnn_good_score["valid_accuracy"]
 assert not dncnn_bad_score["passed"] and not dncnn_bad_score["valid_accuracy"]
 assert hashlib.sha256(dncnn_ref).hexdigest()[:12] in dncnn_good_score["valid_note"]
 
-yolo_payload = bytes([128]) * 102400
+yolo_payload = bytes((i * 37 + 11) & 0xff for i in range(4 * 80 * 80 * 16))
+write_uint8_npy(
+    assets / "yolo-bench" / "yolo_image_set_output_u8.npy",
+    (4, 80, 80, 16),
+    yolo_payload,
+)
 yolo_fields = [
     0x10500001, 1, 1, 80, 80, 16, 4, 1,
     1, sum(yolo_payload), sum(yolo_payload), 1, 0, 16, 0, 0,
 ]
-yolo_good = dump_with_summary(0x180000, yolo_fields, [(0x160000, yolo_payload)])
+yolo_good = dump_with_summary(0x300000 + len(yolo_payload), yolo_fields, [(0x300000, yolo_payload)])
 yolo_bad = bytearray(yolo_good)
-yolo_bad[0x160000 + 17] = 127
+yolo_bad[0x300000 + 17] ^= 1
 yolo_good_score = run_score("yolo", write_results("yolo", "y10_00_base", yolo_good), "yolo-good")
 yolo_bad_score = run_score("yolo", write_results("yolo", "y10_00_base", bytes(yolo_bad)), "yolo-bad")
 assert yolo_good_score["passed"] and yolo_good_score["valid_accuracy"]
 assert not yolo_bad_score["passed"] and not yolo_bad_score["valid_accuracy"]
-
-yolo_set_ref = bytes((i * 37 + 11) & 0xff for i in range(4 * 80 * 80 * 16))
-write_uint8_npy(
-    assets / "yolo-bench" / "yolo_image_set_output_u8.npy",
-    (4, 80, 80, 16),
-    yolo_set_ref,
-)
-test_config["models"]["yolo"]["accuracy"] = {
-    "kind": "uint8_npy",
-    "image_count": 4,
-    "offset": "0x160000",
-    "reference_path": "yolo-bench/yolo_image_set_output_u8.npy",
-    "shape": [4, 80, 80, 16],
-    "max_abs": 0,
-}
-test_config_path.write_text(json.dumps(test_config) + "\n")
-yolo_set_fields = list(yolo_fields)
-yolo_set_fields[9] = yolo_set_fields[10] = sum(yolo_set_ref)
-yolo_set_good = dump_with_summary(0x160000 + len(yolo_set_ref), yolo_set_fields, [(0x160000, yolo_set_ref)])
-yolo_set_bad = bytearray(yolo_set_good)
-yolo_set_bad[0x160000 + 1024] ^= 1
-yolo_set_good_score = run_score(
-    "yolo",
-    write_results("yolo", "y10_00_base", yolo_set_good),
-    "yolo-set-good",
-)
-yolo_set_bad_score = run_score(
-    "yolo",
-    write_results("yolo", "y10_00_base", bytes(yolo_set_bad)),
-    "yolo-set-bad",
-)
-assert yolo_set_good_score["passed"] and yolo_set_good_score["valid_accuracy"]
-assert not yolo_set_bad_score["passed"] and not yolo_set_bad_score["valid_accuracy"]
-assert "uint8_npy" in yolo_set_good_score["valid_note"]
+assert "uint8_npy" in yolo_good_score["valid_note"]
+assert yolo_good_score["kernel_wait_per_image_s"] == 0.0025
 
 whisper_expected = 2097152
 whisper_fields = [
@@ -302,6 +275,7 @@ score = {
     "status": "pass",
     "passed": True,
     "kernel_wait_s": baseline["kernel_wait_s"] + 1.0,
+    "kernel_wait_per_image_s": 0.01,
     "valid_dump": True,
     "valid_accuracy": True,
     "valid_note": "dump valid; accuracy valid",
@@ -400,8 +374,26 @@ if [[ -s "$validated_out" ]]; then
   bad "changed_benchmark_models.py rejected resident Whisper with 30s audio validation"
 fi
 
+yolo_unvalidated_cfg="$(mktemp)"
+python3 - "$yolo_unvalidated_cfg" <<'PY'
+import json, sys
+from pathlib import Path
+
+out = Path(sys.argv[1])
+cfg = json.loads(Path(".github/ci/benchmark_config.json").read_text())
+cfg["models"]["yolo"].pop("validation", None)
+cfg["models"]["yolo"]["accuracy"] = {
+    "kind": "constant_u8",
+    "offset": "0x160000",
+    "count": 102400,
+    "expected_value": 128,
+    "max_abs": 0,
+}
+out.write_text(json.dumps(cfg))
+PY
 yolo_unvalidated_out="$(mktemp)"
 python3 .github/ci/scripts/changed_benchmark_models.py --target board \
+  --config "$yolo_unvalidated_cfg" \
   --changed-file ported_models/yolo/src/yolo_vpu_argbuf.c \
   --format space --unregistered-out "$(mktemp)" --uncovered-out "$yolo_unvalidated_out" >/dev/null \
   || bad "changed_benchmark_models.py under-validated YOLO case failed"
@@ -423,7 +415,7 @@ cfg["models"]["yolo"]["validation"] = {
 cfg["models"]["yolo"]["accuracy"] = {
     "kind": "uint8_npy",
     "image_count": 4,
-    "offset": "0x160000",
+    "offset": "0x300000",
     "reference_path": "yolo-bench/yolo_image_set_output_u8.npy",
     "shape": [4, 80, 80, 16],
     "max_abs": 0,
@@ -440,7 +432,7 @@ if [[ -s "$yolo_validated_out" ]]; then
   bad "changed_benchmark_models.py rejected YOLO with image-set validation"
 fi
 rm -f "$covered_out" "$uncovered_out" "$tmp_cfg" "$under_validated_out" "$validated_out" \
-  "$yolo_unvalidated_out" "$yolo_cfg" "$yolo_validated_out"
+  "$yolo_unvalidated_cfg" "$yolo_unvalidated_out" "$yolo_cfg" "$yolo_validated_out"
 
 if [[ "$fail" -ne 0 ]]; then
   printf '\npreflight FAILED — fix the above before pushing to CI.\n' >&2

@@ -19,6 +19,8 @@
       "yolo": {
         "defines": [
           "-DYOLO_PASSES=1",
+          "-DYOLO_IMAGE_COUNT=4",
+          "-DYOLO_PRELOADED_INPUTS=1",
           "-DNUM_HARTS=16",
           "-DACTIVE_HARTS=8",
           "-DBENCH_THREAD0_ONLY=1"
@@ -48,7 +50,9 @@
       },
       "yolo": {
         "defines": [
-          "-DYOLO_PASSES=1"
+          "-DYOLO_PASSES=1",
+          "-DYOLO_IMAGE_COUNT=4",
+          "-DYOLO_PRELOADED_INPUTS=1"
         ]
       },
       "whisper": {
@@ -114,10 +118,17 @@
       "bench_dir": "yolo-bench",
       "manifest": "yolo_10_variants.txt",
       "full_manifest": "yolo_100_variants.txt",
+      "score": {
+        "metric": "kernel_wait_per_image_s",
+        "label": "Kernel wait/image",
+        "higher_is_better": false
+      },
       "build": {
         "opt": "-O3",
         "defines": [
-          "-DYOLO_PASSES=1"
+          "-DYOLO_PASSES=1",
+          "-DYOLO_IMAGE_COUNT=4",
+          "-DYOLO_PRELOADED_INPUTS=1"
         ]
       },
       "file_loads": [
@@ -128,15 +139,30 @@
             "dncnn3-bench/zero2m.bin"
           ],
           "required": true
+        },
+        {
+          "address": "0x4000",
+          "paths": ["yolo-bench/yolo_image_set_input_f32.bin"],
+          "required": true
+        },
+        {
+          "address": "0x200000",
+          "paths": ["yolo-bench/yolo_image_set_weights_f32.bin"],
+          "required": true
         }
       ],
       "dump_magic": "0x10500001",
-      "dump_size": "0x180000",
+      "dump_size": "0x364000",
+      "validation": {
+        "kind": "yolo_image_set",
+        "image_count": 4
+      },
       "accuracy": {
-        "kind": "constant_u8",
-        "offset": "0x160000",
-        "count": 102400,
-        "expected_value": 128,
+        "kind": "uint8_npy",
+        "image_count": 4,
+        "offset": "0x300000",
+        "reference_path": "yolo-bench/yolo_image_set_output_u8.npy",
+        "shape": [4, 80, 80, 16],
         "max_abs": 0
       },
       "requires_dncnn_inputs": false

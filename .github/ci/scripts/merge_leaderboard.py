@@ -84,6 +84,7 @@ def merge_entry(entries: list, score: dict) -> list:
         "team": team,
         "variant": score.get("variant"),
         "kernel_wait_s": score.get("kernel_wait_s"),
+        "kernel_wait_per_image_s": score.get("kernel_wait_per_image_s"),
         "tokens_per_second": score.get("tokens_per_second"),
         "prompt_tokens_per_second": score.get("prompt_tokens_per_second"),
         "prompt_tokens": score.get("prompt_tokens"),
@@ -98,6 +99,8 @@ def merge_entry(entries: list, score: dict) -> list:
         "run_url": score.get("run_url"),
         "scored_at": score.get("scored_at"),
     }
+    if metric not in new:
+        new[metric] = score.get(metric)
 
     # Replace same team's prior entry, then sort.
     entries = [e for e in entries if e.get("team") != team]

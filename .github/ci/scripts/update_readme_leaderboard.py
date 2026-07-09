@@ -62,7 +62,7 @@ def fmt_metric(model: str, entry: dict | None) -> tuple[str, str]:
     if not entry or entry.get(metric) is None:
         return label, "-"
     value = entry[metric]
-    if metric == "kernel_wait_s":
+    if metric in {"kernel_wait_s", "kernel_wait_per_image_s"}:
         return label, f"{value:.6f}s"
     if metric.endswith("tokens_per_second") or metric == "tokens_per_second":
         return label, f"{value:.2f}"

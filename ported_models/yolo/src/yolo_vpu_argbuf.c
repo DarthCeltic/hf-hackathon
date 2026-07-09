@@ -23,6 +23,10 @@ extern char heap0_end[];
 #define YOLO_PASSES 1u
 #endif
 
+#ifndef YOLO_IMAGE_COUNT
+#define YOLO_IMAGE_COUNT 1u
+#endif
+
 #define YOLO_VPU_OC4 1
 
 #ifndef YOLO_BLOCKS
@@ -37,7 +41,9 @@ extern char heap0_end[];
 #define K                 3u
 #define ACT_FLOATS        (IMG_W * IMG_H * CH)
 #define ACT_BYTES         (ACT_FLOATS * sizeof(float))
+#define INPUT_BYTES       (YOLO_IMAGE_COUNT * ACT_BYTES)
 #define OUT_BYTES         (IMG_W * IMG_H * HEAD_CH)
+#define OUTPUT_BYTES      (YOLO_IMAGE_COUNT * OUT_BYTES)
 #define CONV3_WEIGHTS     (CH * K * K * CH)
 #define CONV1_WEIGHTS     (CH * CH)
 #define BLOCK_WEIGHTS     (CONV3_WEIGHTS + CONV1_WEIGHTS)
@@ -53,10 +59,10 @@ extern char heap0_end[];
 #define SUMMARY_OFFSET    0x1000u
 #define BARRIER_OFFSET    0x1800u
 #define INPUT_OFFSET      0x4000u
-#define WEIGHTS_OFFSET    0x70000u
-#define ACT0_OFFSET       0x80000u
-#define ACT1_OFFSET       0xF0000u
-#define OUTPUT_OFFSET     0x160000u
+#define WEIGHTS_OFFSET    0x200000u
+#define ACT0_OFFSET       0x220000u
+#define ACT1_OFFSET       0x290000u
+#define OUTPUT_OFFSET     0x300000u
 
 #define BENCH_FLB         2u
 #define BENCH_FCC         FCC_0
@@ -798,15 +804,46 @@ static inline void vpu_accum3x3_dot16x4_f32(const float *p,
 	*out3 = sum3;
 }
 
+static uint32_t input_code(uint32_t image, uint32_t y, uint32_t x, uint32_t c)
+{
+	return (image * 17u + y * 5u + x * 3u + c * 11u) & 63u;
+}
+
 static void init_model(float *input, float *weights)
 {
-	for (uint32_t i = 0; i < ACT_FLOATS; i++) {
-		input[i] = (float)((i * 17u + 23u) & 0xffu) * (1.0f / 255.0f);
+	for (uint32_t image = 0; image < YOLO_IMAGE_COUNT; image++) {
+		float *const image_input = input + image * ACT_FLOATS;
+
+		for (uint32_t y = 0; y < IMG_H; y++) {
+			for (uint32_t x = 0; x < IMG_W; x++) {
+				for (uint32_t c = 0; c < CH; c++) {
+					image_input[(y * IMG_W + x) * CH + c] =
+						(float)input_code(image, y, x, c) *
+						(1.0f / 64.0f);
+				}
+			}
+		}
 	}
 
 	for (uint32_t i = 0; i < WEIGHT_FLOATS; i++) {
-		const int32_t v = (int32_t)((i * 29u + 7u) % 31u) - 15;
-		weights[i] = (float)v;
+		weights[i] = 0.0f;
+	}
+
+	for (uint32_t block = 0; block < YOLO_BLOCKS; block++) {
+		float *const block_w = weights + block * BLOCK_WEIGHTS;
+		float *const conv3_w = block_w;
+		float *const conv1_w = block_w + CONV3_WEIGHTS;
+
+		for (uint32_t oc = 0; oc < CH; oc++) {
+			const uint32_t pos = (oc + block) % (K * K);
+			conv3_w[oc * K * K * CH + pos * CH + oc] = 256.0f;
+			conv1_w[oc * CH + oc] = 128.0f;
+		}
+	}
+
+	float *const head_w = weights + YOLO_BLOCKS * BLOCK_WEIGHTS;
+	for (uint32_t oc = 0; oc < HEAD_CH; oc++) {
+		head_w[oc * CH + oc] = 4096.0f;
 	}
 }
 
@@ -1105,10 +1142,15 @@ static uint32_t stripe_checksum(const uint8_t *output,
 {
 	uint32_t sum = 0;
 
-	for (uint32_t y = row0; y < row1; y++) {
-		for (uint32_t x = 0; x < IMG_W; x++) {
-			for (uint32_t c = 0; c < HEAD_CH; c++) {
-				sum += output[(y * IMG_W + x) * HEAD_CH + c];
+	for (uint32_t image = 0; image < YOLO_IMAGE_COUNT; image++) {
+		const uint8_t *const image_output = output + image * OUT_BYTES;
+
+		for (uint32_t y = row0; y < row1; y++) {
+			for (uint32_t x = 0; x < IMG_W; x++) {
+				for (uint32_t c = 0; c < HEAD_CH; c++) {
+					sum += image_output[(y * IMG_W + x) *
+							    HEAD_CH + c];
+				}
 			}
 		}
 	}
@@ -1139,63 +1181,74 @@ int main(uintptr_t arg_area)
 	const uint32_t row0 = (IMG_H * hart_id) / ACTIVE_HARTS;
 	const uint32_t row1 = (IMG_H * (hart_id + 1u)) / ACTIVE_HARTS;
 
+#ifndef YOLO_PRELOADED_INPUTS
 	if (hart_id == 0u) {
 		init_model(input, weights);
 		FENCE;
-		evict(input, ACT_BYTES);
+		evict(input, INPUT_BYTES);
 		evict(weights, WEIGHT_BYTES);
 		WAIT_CACHEOPS;
 	}
+#endif
 	bench_barrier();
 	prefetch_weights_float(weights);
 	FENCE;
 
-	for (uint32_t pass = 0; pass < YOLO_PASSES; pass++) {
-		const float *src = input;
-		float *dst = act0;
+	for (uint32_t image = 0; image < YOLO_IMAGE_COUNT; image++) {
+		const float *const image_input = input + image * ACT_FLOATS;
+		uint8_t *const image_output = final_output + image * OUT_BYTES;
 
-		for (uint32_t block = 0; block < YOLO_BLOCKS; block++) {
-			const float *const block_w =
-				weights + block * BLOCK_WEIGHTS;
-			const float *const conv3_w = block_w;
-			const float *const conv1_w = block_w + CONV3_WEIGHTS;
+		for (uint32_t pass = 0; pass < YOLO_PASSES; pass++) {
+			const float *src = image_input;
+			float *dst = act0;
 
-			evict_activation_read_float(src, row0, row1);
-			WAIT_CACHEOPS;
-			conv3x3_fp(src, conv3_w, dst, row0, row1);
+			for (uint32_t block = 0; block < YOLO_BLOCKS; block++) {
+				const float *const block_w =
+					weights + block * BLOCK_WEIGHTS;
+				const float *const conv3_w = block_w;
+				const float *const conv1_w =
+					block_w + CONV3_WEIGHTS;
+
+				evict_activation_read_float(src, row0, row1);
+				WAIT_CACHEOPS;
+				conv3x3_fp(src, conv3_w, dst, row0, row1);
+				FENCE;
+				evict_activation_write_float(dst, row0, row1);
+				WAIT_CACHEOPS;
+				bench_barrier();
+
+				src = dst;
+				dst = (dst == act0) ? act1 : act0;
+
+				evict_activation_read_float(src, row0, row1);
+				WAIT_CACHEOPS;
+				conv1x1_fp(src, conv1_w, dst, row0, row1);
+				FENCE;
+				evict_activation_write_float(dst, row0, row1);
+				WAIT_CACHEOPS;
+				bench_barrier();
+
+				src = dst;
+				dst = (dst == act0) ? act1 : act0;
+			}
+
+			const float *const head_w =
+				weights + YOLO_BLOCKS * BLOCK_WEIGHTS;
+			head1x1_fp(src, head_w, image_output, row0, row1);
 			FENCE;
-			evict_activation_write_float(dst, row0, row1);
-			WAIT_CACHEOPS;
-			bench_barrier();
-
-			src = dst;
-			dst = (dst == act0) ? act1 : act0;
-
-			evict_activation_read_float(src, row0, row1);
-			WAIT_CACHEOPS;
-			conv1x1_fp(src, conv1_w, dst, row0, row1);
-			FENCE;
-			evict_activation_write_float(dst, row0, row1);
-			WAIT_CACHEOPS;
-			bench_barrier();
-
-			src = dst;
-			dst = (dst == act0) ? act1 : act0;
-		}
-
-		const float *const head_w =
-			weights + YOLO_BLOCKS * BLOCK_WEIGHTS;
-		head1x1_fp(src, head_w, final_output, row0, row1);
-		FENCE;
 #ifdef YOLO_EVICT_OUTPUT_LAST_ONLY
-		if (pass + 1u == YOLO_PASSES)
+			if (pass + 1u == YOLO_PASSES)
 #endif
-		{
-			evict(final_output + row0 * IMG_W * HEAD_CH,
-			      (row1 - row0) * IMG_W * HEAD_CH);
-			WAIT_CACHEOPS;
-		}
+			{
+				evict(image_output + row0 * IMG_W * HEAD_CH,
+				      (row1 - row0) * IMG_W * HEAD_CH);
+				WAIT_CACHEOPS;
+			}
 #ifndef YOLO_SKIP_FINAL_BARRIER
+			bench_barrier();
+#endif
+		}
+#ifdef YOLO_SKIP_FINAL_BARRIER
 		bench_barrier();
 #endif
 	}
@@ -1234,7 +1287,7 @@ int main(uintptr_t arg_area)
 			}
 		}
 
-		for (uint32_t i = 0; i < OUT_BYTES; i++) {
+		for (uint32_t i = 0; i < OUTPUT_BYTES; i++) {
 			output_sum += final_output[i];
 		}
 
@@ -1243,7 +1296,8 @@ int main(uintptr_t arg_area)
 			((uint64_t)YOLO_BLOCKS *
 			 ((uint64_t)CONV3_WEIGHTS + CONV1_WEIGHTS) +
 			 (uint64_t)HEAD_WEIGHTS);
-		const uint64_t ops = macs_per_pass * YOLO_PASSES * 2u;
+		const uint64_t ops = macs_per_pass *
+			YOLO_PASSES * YOLO_IMAGE_COUNT * 2u;
 
 		summary->magic = YOLO_MAGIC;
 		summary->active_harts = ACTIVE_HARTS;
@@ -1259,6 +1313,7 @@ int main(uintptr_t arg_area)
 		summary->ops_lo = (uint32_t)ops;
 		summary->ops_hi = (uint32_t)(ops >> 32);
 		summary->head_channels = HEAD_CH;
+		summary->reserved[0] = YOLO_IMAGE_COUNT;
 
 		FENCE;
 		evict(summary, sizeof(*summary));

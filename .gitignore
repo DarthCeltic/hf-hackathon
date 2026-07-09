@@ -12,6 +12,9 @@
 *.tgz
 *.tar.gz
 *.tar.xz
+!ported_models/yolo/assets/
+!ported_models/yolo/assets/**/*.bin
+!ported_models/yolo/assets/**/*.npy
 local-artifacts/
 .ci-work/
 run_*/
