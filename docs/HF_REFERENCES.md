@@ -13,7 +13,6 @@ from the pinned Hugging Face base model.
 |--------------|-------------------|----------|-------------|---------|
 | `dncnn` | `deepinv/dncnn` | `3bb1f2a95321781343331069776c3eba98707a56` | `bsd-3-clause` | `dncnn_sigma2_gray.pth`, `dncnn_sigma2_color.pth` |
 | `yolo` | `onnx-community/yolov10n` | `57657320425ee34056408a57ad9d29c4d4815bd8` | `agpl-3.0` | `onnx/model.onnx` |
-| `whisper` | `openai/whisper-tiny.en` | `87c7102498dcde7456f24cfd30239ca606ed9063` | `apache-2.0` | `model.safetensors`, tokenizer/config files |
 | `lfm25` | `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` | `047e06635fbe71469926b35ea414537245218200` | `other` | `LFM2.5-1.2B-Instruct-Q8_0.gguf` |
 | `llama32_1b` | `lmstudio-community/Llama-3.2-1B-Instruct-GGUF` | `199151125cf15a129ab3b548b26afeed976df066` | `llama3.2` | `Llama-3.2-1B-Instruct-Q8_0.gguf` |
 | `gemma3n_e2b` | `ggml-org/gemma-3n-E2B-it-GGUF` | `989cffaba23976934324f5e3abfabe31b30eb73b` | `gemma` | `gemma-3n-E2B-it-Q8_0.gguf` |

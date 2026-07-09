@@ -134,7 +134,7 @@ The short version:
 The repo has two model styles:
 
 - Standalone kernel ports: `ported_models/dncnn/`, `ported_models/yolo/`,
-  `ported_models/whisper/`.
+  `ported_models/`.
 - Framework ports: `ported_models/llama_cpp_et/` (per-model GGUF configs live
   under its `benchmarks/`) and `ported_models/ggonnx/`.
 

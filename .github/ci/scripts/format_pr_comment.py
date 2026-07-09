@@ -52,20 +52,11 @@ def cell(text: str, limit: int = 100) -> str:
     return (flat[: limit - 1] + "…") if len(flat) > limit else flat
 
 
-def is_whisper_30s_audio_path(path: str) -> bool:
-    return path.startswith("ported_models/whisper/src/whisper_resident_")
-
-
 def is_yolo_real_image_path(path: str) -> bool:
     return path.startswith("ported_models/yolo/src/")
 
 
 def uncovered_note(path: str) -> str:
-    if is_whisper_30s_audio_path(path):
-        return (
-            "resident Whisper source changed; no configured 30 s audio/transcript "
-            "benchmark covers it"
-        )
     if is_yolo_real_image_path(path):
         return (
             "YOLO source changed; no configured five-image category detection "
@@ -219,9 +210,8 @@ def main() -> int:
             "**Changed runtime source is not covered by an adequate benchmark row:** "
             + ", ".join(f"`{p}`" for p in uncovered)
             + ". Update the configured benchmark source, add a benchmark row for the new variant, "
-            "or keep the change out of the submission. Resident Whisper changes require a "
-            "30 s audio/transcript validation row, not just the compact transformer smoke benchmark. "
-            "YOLO changes require a five-image category detection row."
+            "or keep the change out of the submission. YOLO changes require a "
+            "five-image category detection row."
         )
 
     lines.append("")

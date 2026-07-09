@@ -296,21 +296,11 @@ def cell(value: Any, limit: int = 120) -> str:
     return (flat[: limit - 1] + "...") if len(flat) > limit else flat
 
 
-def is_whisper_30s_audio_path(path: str) -> bool:
-    return path.startswith("ported_models/whisper/src/whisper_resident_")
-
-
 def is_yolo_real_image_path(path: str) -> bool:
     return path.startswith("ported_models/yolo/src/")
 
 
 def uncovered_note(path: str) -> str:
-    if is_whisper_30s_audio_path(path):
-        return (
-            "Resident Whisper source changed, but no configured 30 s "
-            "audio/transcript benchmark covers it. The compact transformer "
-            "smoke row is not enough for Whisper fidelity changes."
-        )
     if is_yolo_real_image_path(path):
         return (
             "YOLO source changed, but no configured five-image real-image "
@@ -365,8 +355,7 @@ def main() -> int:
             "leaderboard value for its primary metric. Models with llama-perplexity enabled "
             f"must also stay within {args.max_ppl_regression:.0%} of the best seen PPL. "
             "CI/scoring-only changes must pass board CI but do not need to improve runtime. "
-            "Fidelity-sensitive paths need their model-specific validation row; resident "
-            "Whisper changes require a 30 s audio/transcript validation, and YOLO changes "
+            "Fidelity-sensitive paths need their model-specific validation row; YOLO changes "
             "require five-image real-image detection validation."
         ),
         "",

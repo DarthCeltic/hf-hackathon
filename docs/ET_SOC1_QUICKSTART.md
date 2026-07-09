@@ -18,7 +18,6 @@ The shared `ported_models` set for this flow is:
 ported_models = [
   "dncnn",
   "yolo",
-  "whisper",
   "lfm25",
 ]
 ```
@@ -27,7 +26,6 @@ These are the models with current sys-emu/board sweep manifests:
 
 - `dncnn`: denoising CNN kernels; requires input and weights blobs.
 - `yolo`: YOLO-style detection kernels.
-- `whisper`: Whisper encoder block kernels.
 - `lfm25`: board-only LFM2.5 GGUF through the ET-backed `llama.cpp` framework.
 
 ## Variables
@@ -152,7 +150,6 @@ cd "$MODEL_PORT_REPO"
 
 .github/ci/scripts/prepare_benchmark_inputs.sh all
 .github/ci/scripts/build_leaderboard_elf.sh yolo
-.github/ci/scripts/build_leaderboard_elf.sh whisper
 .github/ci/scripts/build_leaderboard_elf.sh dncnn
 
 find "$BENCHMARK_ARTIFACT_ROOT" -maxdepth 2 -type f \
@@ -161,8 +158,7 @@ find "$BENCHMARK_ARTIFACT_ROOT" -maxdepth 2 -type f \
 ```
 
 The DnCNN ELF builds from checked-in source, but a DnCNN run also needs derived
-input and weight blobs under `$BENCHMARK_ARTIFACT_ROOT/dncnn3-bench`. If those
-blobs are not present yet, run YOLO and Whisper first.
+input and weight blobs under `$BENCHMARK_ARTIFACT_ROOT/dncnn3-bench`.
 
 ## Local Sys-Emu Run
 
@@ -175,19 +171,19 @@ cd "$MODEL_PORT_REPO"
 scripts/run_sysemu_model_ports.sh \
   --launcher "$LOCAL_ARGBUF" \
   --suite smoke \
-  --model yolo,whisper \
-  --variant yolo_m30,w10_00_base \
+  --model yolo \
+  --variant yolo_m30 \
   --list
 ```
 
-Run the canonical YOLO and Whisper smoke jobs:
+Run the canonical YOLO smoke job:
 
 ```bash
 scripts/run_sysemu_model_ports.sh \
   --launcher "$LOCAL_ARGBUF" \
   --suite smoke \
-  --model yolo,whisper \
-  --variant yolo_m30,w10_00_base \
+  --model yolo \
+  --variant yolo_m30 \
   --timeout 1800 \
   --launcher-timeout 1800
 ```
@@ -196,9 +192,9 @@ Larger suites need their matching variant ELFs and manifests under
 `$BENCHMARK_ARTIFACT_ROOT`. Check what is ready before running them:
 
 ```bash
-scripts/run_sysemu_model_ports.sh --launcher "$LOCAL_ARGBUF" --suite focused20 --model yolo,whisper --list
-scripts/run_sysemu_model_ports.sh --launcher "$LOCAL_ARGBUF" --suite focused20b --model yolo,whisper --list
-scripts/run_sysemu_model_ports.sh --launcher "$LOCAL_ARGBUF" --suite full --model yolo,whisper --list
+scripts/run_sysemu_model_ports.sh --launcher "$LOCAL_ARGBUF" --suite focused20 --model yolo --list
+scripts/run_sysemu_model_ports.sh --launcher "$LOCAL_ARGBUF" --suite focused20b --model yolo --list
+scripts/run_sysemu_model_ports.sh --launcher "$LOCAL_ARGBUF" --suite full --model yolo --list
 ```
 
 Sys-emu can be much slower than the board for the larger hand-C kernels.
@@ -235,7 +231,7 @@ ssh "$BOARD_SSH" "
 These examples assume the smoke artifacts above exist under
 `$BENCHMARK_ARTIFACT_ROOT`.
 
-Common input used by YOLO, Whisper, and DnCNN:
+Common input used by YOLO and DnCNN:
 
 ```bash
 ssh "$BOARD_SSH" "mkdir -p '$REMOTE_MODELS'"
@@ -275,9 +271,6 @@ rsync -aq \
   "$BENCHMARK_ARTIFACT_ROOT/dncnn3-bench/dncnn3_weights.bin" \
   "$BOARD_SSH:$REMOTE_MODELS/"
 ```
-
-Use the same pattern for `whisper-bench`: stage the `*10*.elf` files and the
-matching `*_10_variants.txt` manifest.
 
 ## Run One Kernel On The Board
 

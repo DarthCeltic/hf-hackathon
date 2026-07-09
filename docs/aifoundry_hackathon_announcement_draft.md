@@ -50,7 +50,7 @@ You can join solo or bring teammates.
 | Quest | What to build |
 |---|---|
 | 👁️ Vision | Denoising, detection, and camera-first open model workloads |
-| 🎙️ Speech + audio | Whisper-style kernels and streaming-friendly pipelines |
+| 🎙️ Speech + audio | Streaming-friendly pipelines and compact audio kernels |
 | 🧠 Local LLMs | GGUF and `llama.cpp`-style runtime paths |
 | 🤖 Robotics + drones | Perception, control, and hardware-aware model ports |
 | ⚙️ Systems | Faster kernels, memory movement, board runners, profiling |
@@ -63,7 +63,7 @@ Good submissions make an open model, kernel, runtime path, or benchmark more use
 That can mean:
 
 - Porting a new open model.
-- Improving an existing DnCNN, YOLO, Whisper, or LLM benchmark.
+- Improving an existing DnCNN, YOLO, or LLM benchmark.
 - Making a kernel faster and documenting the board result.
 - Adding a reproducible benchmark around a real robotics, drone, speech, or vision workload.
 - Packaging a small demo that shows why the model port matters.

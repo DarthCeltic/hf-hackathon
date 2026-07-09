@@ -2,7 +2,7 @@
 
 This is the silicon-port workflow for the checked-in CORE-ET reference models
 running on ET-SoC1 boards:
-DnCNN, YOLO, and Whisper.
+DnCNN and YOLO.
 
 The goal is not to ask a model to write an end-to-end model port. The useful
 unit of work is one operation, one layer, one block, or one audit boundary at a
@@ -68,7 +68,7 @@ The host side is the source of truth for one boundary at a time:
 - ONNXRuntime for graph or layer outputs.
 - numpy for explicit math checks.
 - raw-int8 host executors when the silicon path uses packed quantized tensors.
-- saved taps for intermediate YOLO and Whisper boundaries.
+- saved taps for intermediate YOLO boundaries.
 
 Host reference output should be deterministic and small enough to compare often.
 For large outputs, compare both summary metrics and selected slices.
@@ -161,7 +161,6 @@ The script covers the current model set:
 
 - `dncnn`
 - `yolo`
-- `whisper`
 
 If a model requires external reference files, put them under `local-artifacts/`.
 
