@@ -103,7 +103,9 @@ with tempfile.TemporaryDirectory() as td:
     repo = tmp / "repo"
     base = initialize(repo)
     run(repo, "git", "switch", "-q", "-c", "participant")
-    (repo / "ported_models/yolo/src/kernel.c").write_text("int kernel(void) { return 2; }\n")
+    # Formatting is participant-owned and must not block an otherwise valid
+    # implementation overlay.
+    (repo / "ported_models/yolo/src/kernel.c").write_text("int kernel(void) { return 2; } \n")
     (repo / "ported_models/yolo/src/fused.inc").write_text("static const int fused = 1;\n")
     (repo / "ported_models/yolo/src/build.sh").write_text("exit 99\n")
     (repo / "ported_models/yolo/assets/yolo/weights_region.bin").write_bytes(b"fused\0weights")

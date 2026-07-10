@@ -158,7 +158,7 @@ def apply_overlay(repo: Path, base: str, head: str, main: str) -> dict[str, obje
         "apply",
         "--index",
         "--3way",
-        "--whitespace=error-all",
+        "--whitespace=nowarn",
         "-",
         input_bytes=patch,
     )
