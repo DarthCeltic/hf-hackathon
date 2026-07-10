@@ -1193,55 +1193,125 @@ static void conv2d_dw3x3_s1_p1_fp32_mh_vpu(uint32_t hid,
 
 /* -- Multi-hart helpers for the residual / concat / activation tail -- */
 
-/* mh_copy_floats: split N float copies across all compute harts. */
+/* Partition N elements into whole 2-float (8-byte) blocks BEFORE dividing
+ * across harts -- same block-quantization principle as the DFL-decode/
+ * postprocess cache-line fixes elsewhere in this file, generalized here
+ * to guarantee 8-byte alignment for 64-bit wide loads/stores instead of
+ * 64-byte cache-line alignment. lo/hi are always even, so dst+lo/src+lo
+ * stay 8-byte aligned relative to this kernel's scratch offsets (all far
+ * more than 8-byte aligned already -- every SCR_* constant is a multiple
+ * of 0x10000). A single odd tail element (N odd) is handled by the last
+ * hart alone, outside the wide path. */
+static inline void mh_even_range(uint32_t N, uint32_t cidx, uint32_t *lo, uint32_t *hi) {
+    uint32_t blk_lo, blk_hi;
+    yolo_range(N / 2u, cidx, &blk_lo, &blk_hi);
+    *lo = blk_lo * 2u;
+    *hi = blk_hi * 2u;
+}
+
+/* mh_copy_floats: split N float copies across all compute harts, using
+ * 64-bit wide loads/stores (2 floats/iteration) for the aligned bulk --
+ * pure data movement, so packing two floats into one uint64_t transfer
+ * is bit-identical to two scalar float copies, just half the memory
+ * instructions. */
 static inline void mh_copy_floats(uint32_t hid, float *dst, const float *src, uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t lo, hi;
-    yolo_range(N, cidx, &lo, &hi);
-    for (uint32_t i = lo; i < hi; i++) dst[i] = src[i];
+    mh_even_range(N, cidx, &lo, &hi);
+
+    uint64_t *dst64 = (uint64_t *)(dst + lo);
+    const uint64_t *src64 = (const uint64_t *)(src + lo);
+    const uint32_t n64 = (hi - lo) / 2u;
+    for (uint32_t k = 0; k < n64; k++) dst64[k] = src64[k];
     if (hi > lo) evict((const void *)(dst + lo), (hi - lo) * sizeof(float));
+
+    if ((N & 1u) && cidx == YOLO_NHART - 1u) {
+        dst[N - 1u] = src[N - 1u];
+        evict((const void *)(dst + N - 1u), sizeof(float));
+    }
 }
 
-/* mh_add_floats: y = a + b, multi-hart. */
+/* mh_add_floats: y = a + b, multi-hart, 2x-unrolled (packed float-add
+ * isn't a free bit-trick the way packed copy is -- no SIMD add without
+ * the VPU asm kernels this scalar path deliberately isn't -- but
+ * unrolling still cuts loop-control overhead and gives the compiler two
+ * independent adds per iteration to pipeline). */
 static inline void mh_add_floats(uint32_t hid, float *y, const float *a, const float *b, uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t lo, hi;
-    yolo_range(N, cidx, &lo, &hi);
-    for (uint32_t i = lo; i < hi; i++) y[i] = a[i] + b[i];
+    mh_even_range(N, cidx, &lo, &hi);
+    for (uint32_t i = lo; i < hi; i += 2u) {
+        y[i]     = a[i]     + b[i];
+        y[i + 1] = a[i + 1] + b[i + 1];
+    }
     if (hi > lo) evict((const void *)(y + lo), (hi - lo) * sizeof(float));
+
+    if ((N & 1u) && cidx == YOLO_NHART - 1u) {
+        y[N - 1u] = a[N - 1u] + b[N - 1u];
+        evict((const void *)(y + N - 1u), sizeof(float));
+    }
 }
 
-/* mh_iadd_floats: y += b, in place, multi-hart. */
+/* mh_iadd_floats: y += b, in place, multi-hart, 2x-unrolled (same
+ * rationale as mh_add_floats). */
 static inline void mh_iadd_floats(uint32_t hid, float *y, const float *b, uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t lo, hi;
-    yolo_range(N, cidx, &lo, &hi);
-    for (uint32_t i = lo; i < hi; i++) y[i] += b[i];
+    mh_even_range(N, cidx, &lo, &hi);
+    for (uint32_t i = lo; i < hi; i += 2u) {
+        y[i]     += b[i];
+        y[i + 1] += b[i + 1];
+    }
     if (hi > lo) evict((const void *)(y + lo), (hi - lo) * sizeof(float));
+
+    if ((N & 1u) && cidx == YOLO_NHART - 1u) {
+        y[N - 1u] += b[N - 1u];
+        evict((const void *)(y + N - 1u), sizeof(float));
+    }
 }
 
-/* Multi-hart concat of 3 same-shape blocks into 3*N floats. */
+/* Multi-hart concat of 3 same-shape blocks into 3*N floats. 64-bit wide
+ * copy for each of the 3 passes (pure data movement, same rationale as
+ * mh_copy_floats), block-quantized to whole 2-float chunks per pass. */
 static inline void mh_concat3(uint32_t hid, float *dst,
                               const float *a, const float *b, const float *c,
                               uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t lo, hi;
-    yolo_range(N, cidx, &lo, &hi);
-    for (uint32_t i = lo; i < hi; i++) dst[          i] = a[i];
-    for (uint32_t i = lo; i < hi; i++) dst[1u*N   + i] = b[i];
-    for (uint32_t i = lo; i < hi; i++) dst[2u*N   + i] = c[i];
+    mh_even_range(N, cidx, &lo, &hi);
+    const uint32_t n64 = (hi - lo) / 2u;
+
+    {
+        uint64_t *d64 = (uint64_t *)(dst + lo); const uint64_t *s64 = (const uint64_t *)(a + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
+    {
+        uint64_t *d64 = (uint64_t *)(dst + 1u*N + lo); const uint64_t *s64 = (const uint64_t *)(b + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
+    {
+        uint64_t *d64 = (uint64_t *)(dst + 2u*N + lo); const uint64_t *s64 = (const uint64_t *)(c + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
     if (hi > lo) {
         evict((const void *)(dst + lo),         (hi - lo) * sizeof(float));
         evict((const void *)(dst + 1u*N + lo),  (hi - lo) * sizeof(float));
         evict((const void *)(dst + 2u*N + lo),  (hi - lo) * sizeof(float));
     }
+    if ((N & 1u) && cidx == YOLO_NHART - 1u) {
+        dst[N-1u] = a[N-1u]; dst[1u*N+N-1u] = b[N-1u]; dst[2u*N+N-1u] = c[N-1u];
+        evict((const void *)(dst + N - 1u), sizeof(float));
+        evict((const void *)(dst + 1u*N + N - 1u), sizeof(float));
+        evict((const void *)(dst + 2u*N + N - 1u), sizeof(float));
+    }
 }
 
-/* Multi-hart concat of 4 same-shape blocks (used by SPPF). */
+/* Multi-hart concat of 4 same-shape blocks (used by SPPF). Same 64-bit
+ * wide-copy treatment as mh_concat3. */
 static inline void mh_concat4(uint32_t hid, float *dst,
                               const float *a, const float *b,
                               const float *c, const float *d,
@@ -1249,16 +1319,37 @@ static inline void mh_concat4(uint32_t hid, float *dst,
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t lo, hi;
-    yolo_range(N, cidx, &lo, &hi);
-    for (uint32_t i = lo; i < hi; i++) dst[          i] = a[i];
-    for (uint32_t i = lo; i < hi; i++) dst[1u*N   + i] = b[i];
-    for (uint32_t i = lo; i < hi; i++) dst[2u*N   + i] = c[i];
-    for (uint32_t i = lo; i < hi; i++) dst[3u*N   + i] = d[i];
+    mh_even_range(N, cidx, &lo, &hi);
+    const uint32_t n64 = (hi - lo) / 2u;
+
+    {
+        uint64_t *d64 = (uint64_t *)(dst + lo); const uint64_t *s64 = (const uint64_t *)(a + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
+    {
+        uint64_t *d64 = (uint64_t *)(dst + 1u*N + lo); const uint64_t *s64 = (const uint64_t *)(b + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
+    {
+        uint64_t *d64 = (uint64_t *)(dst + 2u*N + lo); const uint64_t *s64 = (const uint64_t *)(c + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
+    {
+        uint64_t *d64 = (uint64_t *)(dst + 3u*N + lo); const uint64_t *s64 = (const uint64_t *)(d + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
     if (hi > lo) {
         evict((const void *)(dst + lo),         (hi - lo) * sizeof(float));
         evict((const void *)(dst + 1u*N + lo),  (hi - lo) * sizeof(float));
         evict((const void *)(dst + 2u*N + lo),  (hi - lo) * sizeof(float));
         evict((const void *)(dst + 3u*N + lo),  (hi - lo) * sizeof(float));
+    }
+    if ((N & 1u) && cidx == YOLO_NHART - 1u) {
+        dst[N-1u] = a[N-1u]; dst[1u*N+N-1u] = b[N-1u]; dst[2u*N+N-1u] = c[N-1u]; dst[3u*N+N-1u] = d[N-1u];
+        evict((const void *)(dst + N - 1u), sizeof(float));
+        evict((const void *)(dst + 1u*N + N - 1u), sizeof(float));
+        evict((const void *)(dst + 2u*N + N - 1u), sizeof(float));
+        evict((const void *)(dst + 3u*N + N - 1u), sizeof(float));
     }
 }
 
@@ -1414,6 +1505,15 @@ static inline void mh_transpose_2d(uint32_t hid, const float *in, float *out,
     if (j_hi > j_lo) evict((const void *)(out + j_lo * M), (j_hi - j_lo) * M * sizeof(float));
 }
 
+/* i,k,j loop order (not the naive i,j,k): for a fixed i, walks k in the
+ * middle loop and j innermost, so both B[k*N+j] and C[i*N+j] are read/
+ * written SEQUENTIALLY as j increments -- the i,j,k order instead strides
+ * through B by N floats on every single k step (every k touches a
+ * different cache line), which thrashes L1 for anything but tiny N. Same
+ * arithmetic result (just re-associated float sums, standard and
+ * accepted for this class of numerical code); requires C zeroed first
+ * since accumulation now spans the whole k loop instead of finishing
+ * each C[i,j] in one pass. */
 static inline void mh_matmul_2d_fp32(uint32_t hid, const float *A, const float *B, float *C,
                                      uint32_t M, uint32_t K, uint32_t N) {
     if (!yolo_is_compute(hid)) return;
@@ -1421,10 +1521,12 @@ static inline void mh_matmul_2d_fp32(uint32_t hid, const float *A, const float *
     uint32_t i_lo, i_hi;
     yolo_range(M, cidx, &i_lo, &i_hi);
     for (uint32_t i = i_lo; i < i_hi; i++) {
-        for (uint32_t j = 0; j < N; j++) {
-            float acc = 0.0f;
-            for (uint32_t k = 0; k < K; k++) acc += A[i*K + k] * B[k*N + j];
-            C[i*N + j] = acc;
+        float *c_row = C + i * N;
+        for (uint32_t j = 0; j < N; j++) c_row[j] = 0.0f;
+        for (uint32_t k = 0; k < K; k++) {
+            const float a_ik = A[i*K + k];
+            const float *b_row = B + k * N;
+            for (uint32_t j = 0; j < N; j++) c_row[j] += a_ik * b_row[j];
         }
     }
     if (i_hi > i_lo) evict((const void *)(C + i_lo * N), (i_hi - i_lo) * N * sizeof(float));
@@ -1447,6 +1549,13 @@ static inline void mh_softmax_rows(uint32_t hid, float *x, uint32_t M, uint32_t 
     if (i_hi > i_lo) evict((const void *)(x + i_lo * N), (i_hi - i_lo) * N * sizeof(float));
 }
 
+/* Nearest-neighbor 2x has a free 64-bit packing trick unrelated to the
+ * generic block-quantization used elsewhere: for output column ow, the
+ * source column is iw = ow/2 -- so ow=2m and ow=2m+1 (an adjacent pair)
+ * ALWAYS map to the exact same source float. One scalar read + one
+ * 64-bit store (both halves set to the same value) replaces two separate
+ * scalar stores. OW = W*2 is always even, so every output row splits into
+ * whole pairs with no tail case. */
 static inline void mh_upsample_nearest_2x(uint32_t hid, const float *in, float *out,
                                           uint32_t C, uint32_t H, uint32_t W) {
     if (!yolo_is_compute(hid)) return;
@@ -1457,9 +1566,13 @@ static inline void mh_upsample_nearest_2x(uint32_t hid, const float *in, float *
     for (uint32_t c = 0; c < C; c++) {
         for (uint32_t oh = oh_lo; oh < oh_hi; oh++) {
             const uint32_t ih = oh / 2u;
-            for (uint32_t ow = 0; ow < OW; ow++) {
-                const uint32_t iw = ow / 2u;
-                out[(c * OH + oh) * OW + ow] = in[(c * H + ih) * W + iw];
+            const float *in_row = in + (c * H + ih) * W;
+            uint64_t *out_row64 = (uint64_t *)(out + (c * OH + oh) * OW);
+            for (uint32_t iw = 0; iw < W; iw++) {
+                union { float f[2]; uint64_t u; } pair;
+                pair.f[0] = in_row[iw];
+                pair.f[1] = in_row[iw];
+                out_row64[iw] = pair.u;
             }
         }
     }
@@ -1470,6 +1583,14 @@ static inline void mh_upsample_nearest_2x(uint32_t hid, const float *in, float *
 }
 #define MH_UPSAMPLE2X(IN, OUT, C, H, W) do { mh_upsample_nearest_2x(hid, (IN), (OUT), (C), (H), (W)); MH_BARRIER(); } while (0)
 
+/* mh_concat2_c_chw: N (=total) is always a multiple of 128 at every call
+ * site in this kernel (verified: m.12/15/18/21 all have Ca*H*W a multiple
+ * of 128), which already guarantees hart boundaries land on multiples of
+ * 16 -- more than enough for 8-byte alignment. Split each hart's range at
+ * the a/b source boundary (bytes_a) so each segment is a single-source
+ * wide copy instead of a per-element branch; bytes_a itself is even at
+ * every call site (Ca is always an even channel count here), so the
+ * segment boundaries stay 8-byte aligned too. */
 static inline void mh_concat2_c_chw(uint32_t hid, const float *a, uint32_t Ca,
                                      const float *b, uint32_t Cb,
                                      float *out, uint32_t H, uint32_t W) {
@@ -1479,7 +1600,19 @@ static inline void mh_concat2_c_chw(uint32_t hid, const float *a, uint32_t Ca,
     const uint32_t total = bytes_a + Cb * H * W;
     uint32_t lo, hi;
     yolo_range(total, cidx, &lo, &hi);
-    for (uint32_t i = lo; i < hi; i++) out[i] = (i < bytes_a) ? a[i] : b[i - bytes_a];
+
+    const uint32_t a_seg_lo = lo, a_seg_hi = hi < bytes_a ? hi : bytes_a;
+    if (a_seg_hi > a_seg_lo) {
+        uint64_t *d64 = (uint64_t *)(out + a_seg_lo);
+        const uint64_t *s64 = (const uint64_t *)(a + a_seg_lo);
+        for (uint32_t k = 0; k < (a_seg_hi - a_seg_lo) / 2u; k++) d64[k] = s64[k];
+    }
+    const uint32_t b_seg_lo = lo > bytes_a ? lo : bytes_a, b_seg_hi = hi;
+    if (b_seg_hi > b_seg_lo) {
+        uint64_t *d64 = (uint64_t *)(out + b_seg_lo);
+        const uint64_t *s64 = (const uint64_t *)(b + (b_seg_lo - bytes_a));
+        for (uint32_t k = 0; k < (b_seg_hi - b_seg_lo) / 2u; k++) d64[k] = s64[k];
+    }
     if (hi > lo) evict((const void *)(out + lo), (hi - lo) * sizeof(float));
 }
 #define MH_CONCAT2_CHW(A, CA, B, CB, OUT, H, W) do { mh_concat2_c_chw(hid, (A), (CA), (B), (CB), (OUT), (H), (W)); MH_BARRIER(); } while (0)
