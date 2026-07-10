@@ -740,7 +740,7 @@ int main(uintptr_t arg_area)
             for (uint32_t c = 0; c < 80u; c++) {
                 for (uint32_t s = 0; s < HW; s++) {
                     const float v = cls_in[c * HW + s];
-                    final_out[(4u + c) * 3024u + (anchor_off + s)] = fast_recip(1.0f + my_expf(-v));
+                    final_out[(4u + c) * 3024u + (anchor_off + s)] = v;
                 }
             }
         }
@@ -768,13 +768,15 @@ int main(uintptr_t arg_area)
         struct Cand *cands = (struct Cand *)tb;   /* up to 3024 candidates */
         uint32_t n_cands = 0;
         for (uint32_t a = 0; a < 3024u; a++) {
-            float best_score = 0.0f;
+            float best_logit = -1e9f;
             uint32_t best_cls = 0;
             for (uint32_t c = 0; c < 80u; c++) {
                 const float p = final_out[(4u + c) * 3024u + a];
-                if (p > best_score) { best_score = p; best_cls = c; }
+                if (p > best_logit) { best_logit = p; best_cls = c; }
             }
-            if (best_score < CONF_THRESH) continue;
+            /* CONF_THRESH = 0.25f in prob space -> logit = ln(0.25/0.75) = -1.09861228867f */
+            if (best_logit < -1.09861228867f) continue;
+            float best_score = fast_recip(1.0f + my_expf(-best_logit));
             const float cx = final_out[0u * 3024u + a];
             const float cy = final_out[1u * 3024u + a];
             const float bw = final_out[2u * 3024u + a];
