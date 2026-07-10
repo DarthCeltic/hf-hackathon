@@ -17,6 +17,10 @@ on:
         type: boolean
         required: false
         default: false
+    secrets:
+      BENCHMARK_ASSETS_URL:
+        description: "Optional private benchmark asset archive for non-trusted callers."
+        required: false
   workflow_dispatch:
     inputs:
       ref:

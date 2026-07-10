@@ -37,6 +37,9 @@ fi
 if ! grep -qF 'pull_request_target:' .github/workflows/trusted-yolo-pr.yml; then
   bad "trusted YOLO caller must be loaded from the default branch"
 fi
+if ! grep -qF 'run-name: "Trusted YOLO PR #' .github/workflows/trusted-yolo-pr.yml; then
+  bad "trusted YOLO run name must retain the PR number and head SHA"
+fi
 if ! grep -qF 'context=trusted-yolo/main-gate' \
   .github/workflows/trusted-yolo-pr.yml; then
   bad "trusted YOLO caller does not publish its merge status on the participant commit"

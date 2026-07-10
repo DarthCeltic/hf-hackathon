@@ -1,5 +1,5 @@
 name: Trusted YOLO PR gate
-run-name: Trusted YOLO PR #${{ github.event.pull_request.number }} (${{ github.event.pull_request.head.sha }})
+run-name: "Trusted YOLO PR #${{ github.event.pull_request.number }} (${{ github.event.pull_request.head.sha }})"
 
 # This file is intentionally only a caller. The implementation is resolved from
 # main so a participant PR cannot replace the benchmark harness it runs against.
@@ -8,7 +8,12 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
-  contents: read
+  # The shared workflow also contains main-push/comment jobs with these maximum
+  # permissions. They are skipped in trusted mode; its board job still declares
+  # and receives contents:read only.
+  actions: write
+  contents: write
+  pull-requests: write
   statuses: write
 
 concurrency:
