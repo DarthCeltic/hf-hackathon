@@ -1392,4 +1392,96 @@ static inline void transpose_2d(const float *in, float *out, uint32_t M, uint32_
             out[j*M + i] = in[i*N + j];
 }
 
+/* --- Multi-hart mirrors of transpose/matmul/softmax/upsample/concat2 ---
+ * All four split by an axis whose per-hart write span is a CONTIGUOUS run
+ * of full output rows (never a mid-row/mid-cache-line element split), so
+ * every hart's evict() region starts and ends on whole-row boundaries.
+ * That sidesteps the non-coherent-L1D lost-update race documented for the
+ * DFL decode path (raw yolo_range() over a flat element count can land a
+ * hart boundary mid-64-byte-line; row-granularity splits cannot, because
+ * each row here is itself always a multiple of 16 floats in every call
+ * site used in this kernel). */
+
+static inline void mh_transpose_2d(uint32_t hid, const float *in, float *out,
+                                   uint32_t M, uint32_t N) {
+    if (!yolo_is_compute(hid)) return;
+    const uint32_t cidx = yolo_compute_idx(hid);
+    uint32_t j_lo, j_hi;
+    yolo_range(N, cidx, &j_lo, &j_hi);
+    for (uint32_t j = j_lo; j < j_hi; j++)
+        for (uint32_t i = 0; i < M; i++)
+            out[j*M + i] = in[i*N + j];
+    if (j_hi > j_lo) evict((const void *)(out + j_lo * M), (j_hi - j_lo) * M * sizeof(float));
+}
+
+static inline void mh_matmul_2d_fp32(uint32_t hid, const float *A, const float *B, float *C,
+                                     uint32_t M, uint32_t K, uint32_t N) {
+    if (!yolo_is_compute(hid)) return;
+    const uint32_t cidx = yolo_compute_idx(hid);
+    uint32_t i_lo, i_hi;
+    yolo_range(M, cidx, &i_lo, &i_hi);
+    for (uint32_t i = i_lo; i < i_hi; i++) {
+        for (uint32_t j = 0; j < N; j++) {
+            float acc = 0.0f;
+            for (uint32_t k = 0; k < K; k++) acc += A[i*K + k] * B[k*N + j];
+            C[i*N + j] = acc;
+        }
+    }
+    if (i_hi > i_lo) evict((const void *)(C + i_lo * N), (i_hi - i_lo) * N * sizeof(float));
+}
+
+static inline void mh_softmax_rows(uint32_t hid, float *x, uint32_t M, uint32_t N) {
+    if (!yolo_is_compute(hid)) return;
+    const uint32_t cidx = yolo_compute_idx(hid);
+    uint32_t i_lo, i_hi;
+    yolo_range(M, cidx, &i_lo, &i_hi);
+    for (uint32_t i = i_lo; i < i_hi; i++) {
+        float *row = x + i * N;
+        float m = row[0];
+        for (uint32_t j = 1; j < N; j++) if (row[j] > m) m = row[j];
+        float s = 0.0f;
+        for (uint32_t j = 0; j < N; j++) { row[j] = my_expf(row[j] - m); s += row[j]; }
+        const float inv = fast_recip(s);
+        for (uint32_t j = 0; j < N; j++) row[j] *= inv;
+    }
+    if (i_hi > i_lo) evict((const void *)(x + i_lo * N), (i_hi - i_lo) * N * sizeof(float));
+}
+
+static inline void mh_upsample_nearest_2x(uint32_t hid, const float *in, float *out,
+                                          uint32_t C, uint32_t H, uint32_t W) {
+    if (!yolo_is_compute(hid)) return;
+    const uint32_t cidx = yolo_compute_idx(hid);
+    const uint32_t OH = H * 2u, OW = W * 2u;
+    uint32_t oh_lo, oh_hi;
+    yolo_range(OH, cidx, &oh_lo, &oh_hi);
+    for (uint32_t c = 0; c < C; c++) {
+        for (uint32_t oh = oh_lo; oh < oh_hi; oh++) {
+            const uint32_t ih = oh / 2u;
+            for (uint32_t ow = 0; ow < OW; ow++) {
+                const uint32_t iw = ow / 2u;
+                out[(c * OH + oh) * OW + ow] = in[(c * H + ih) * W + iw];
+            }
+        }
+    }
+    if (oh_hi > oh_lo) {
+        for (uint32_t c = 0; c < C; c++)
+            evict((const void *)(out + (c * OH + oh_lo) * OW), (oh_hi - oh_lo) * OW * sizeof(float));
+    }
+}
+#define MH_UPSAMPLE2X(IN, OUT, C, H, W) do { mh_upsample_nearest_2x(hid, (IN), (OUT), (C), (H), (W)); MH_BARRIER(); } while (0)
+
+static inline void mh_concat2_c_chw(uint32_t hid, const float *a, uint32_t Ca,
+                                     const float *b, uint32_t Cb,
+                                     float *out, uint32_t H, uint32_t W) {
+    if (!yolo_is_compute(hid)) return;
+    const uint32_t cidx = yolo_compute_idx(hid);
+    const uint32_t bytes_a = Ca * H * W;
+    const uint32_t total = bytes_a + Cb * H * W;
+    uint32_t lo, hi;
+    yolo_range(total, cidx, &lo, &hi);
+    for (uint32_t i = lo; i < hi; i++) out[i] = (i < bytes_a) ? a[i] : b[i - bytes_a];
+    if (hi > lo) evict((const void *)(out + lo), (hi - lo) * sizeof(float));
+}
+#define MH_CONCAT2_CHW(A, CA, B, CB, OUT, H, W) do { mh_concat2_c_chw(hid, (A), (CA), (B), (CB), (OUT), (H), (W)); MH_BARRIER(); } while (0)
+
 #endif
