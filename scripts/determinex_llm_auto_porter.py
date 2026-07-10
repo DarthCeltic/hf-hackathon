@@ -24,6 +24,30 @@ This version adds four gates, all checked BEFORE a candidate is written:
 
 Every skip is printed with its reason so a human can audit what was
 excluded and why -- silence is not a verification strategy.
+
+SECOND HARDENING PASS (2026-07-10, same day): the first hardened run still
+produced registrations `Select board models` could never find -- the script
+wrote artifacts.json + the per-model benchmark JSON but never registered
+`.github/ci/benchmark_config.json`'s `models.<key>.config` entry, the exact
+"easy to miss" third step documented in corpus
+`model_registration_checklist`. Confirmed live on this repo's own PR#46
+history (10 claimed benchmarks, 0 selected) and PR#46's earlier commit.
+This version writes that registration too, so every new candidate is at
+least *discoverable* by CI -- `benchmark_default` stays False regardless,
+so nothing is auto-promoted into the scored default suite; a human still
+makes that call explicitly.
+
+THIRD HARDENING PASS (2026-07-10, same session, found by actually running
+the fixed script and manually auditing its 3 real candidates before
+trusting any of them): one candidate ("Qwen3-Coder-Next", unsloth) silently
+grabbed shard 1-of-3 of a multi-part GGUF
+(`Q8_0/Qwen3-Coder-Next-Q8_0-00001-of-00003.gguf`, 5.9MB) and registered it
+as if it were the complete model -- the single-file download/load path this
+harness uses cannot reconstruct a sharded checkpoint from one part. Gate 5
+below rejects any filename matching HF's `-NNNNN-of-NNNNN.gguf` sharding
+convention; a real multi-part-download harness is a distinct, currently
+unimplemented feature, not something to silently mis-register as a single
+small artifact.
 """
 import argparse
 import json
@@ -54,6 +78,11 @@ JUNK_REPO_PATTERNS = (
 # harness and must not be force-fit into this one.
 ACCEPTED_PIPELINE_TAGS = {"text-generation", "text2text-generation"}
 
+# Gate 5: HF's multi-part GGUF sharding convention, e.g.
+# "Model-Q8_0-00001-of-00003.gguf". This harness's single-file
+# download/load path cannot reconstruct a checkpoint from one shard.
+SHARDED_GGUF_PATTERN = re.compile(r"-\d{5}-of-\d{5}\.gguf$", re.I)
+
 
 def base_model_identity(repo_id: str, filename: str) -> str:
     """Normalize a repo+filename to a coarse base-model identity for dedup,
@@ -72,6 +101,36 @@ def is_junk_repo(repo_id: str) -> bool:
     return any(p.search(name) for p in JUNK_REPO_PATTERNS)
 
 
+def register_in_benchmark_config(config_path: str, new_entries: dict) -> None:
+    """Insert new `models.<key> = {"config": ...}` entries as a raw text
+    splice, not a json.load/json.dump round-trip. This file mixes compact
+    single-line arrays (e.g. `"paths": ["x.bin"]`) with multi-line objects;
+    a full json.dump(indent=2) round-trip silently expands every compact
+    array in the file into multi-line form, turning a 2-model addition into
+    a 40+ line diff of unrelated formatting churn. A model registration PR
+    should touch only the lines it actually changes.
+
+    Anchors on the exact top-level `  "models": {` line (2-space indent) --
+    this file also has a `"board": {"models": {...}}` and
+    `"ci_smoke": {"models": {...}}`, both nested one level deeper (4-space
+    indent), so the indent width disambiguates which "models" block is the
+    real registry."""
+    if not new_entries:
+        return
+    text = open(config_path, "r", encoding="utf-8").read()
+    anchor = '\n  "models": {\n'
+    idx = text.find(anchor)
+    if idx == -1:
+        raise RuntimeError(f"could not find top-level \"models\": {{ anchor in {config_path}")
+    insert_at = idx + len(anchor)
+    lines = []
+    for key, entry in new_entries.items():
+        lines.append(f'    "{key}": {{\n      "config": "{entry["config"]}"\n    }},\n')
+    text = text[:insert_at] + "".join(lines) + text[insert_at:]
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Determinex LLM Auto-Porter for ET-SoC1")
     parser.add_argument("--tags", nargs='+', default=["gguf", "q8_0"], help="Tags to filter models")
@@ -79,6 +138,10 @@ def main():
     parser.add_argument("--limit", type=int, default=10, help="Number of models to process")
     parser.add_argument("--artifacts", type=str, default="ported_models/llama_cpp_et/artifacts.json", help="Path to artifacts.json")
     parser.add_argument("--benchmarks", type=str, default="ported_models/llama_cpp_et/benchmarks", help="Path to benchmarks dir")
+    parser.add_argument("--benchmark-config", type=str, default=".github/ci/benchmark_config.json",
+                         help="Path to the CI models.<key>.config registry -- without this entry "
+                              "'Select board models' can never find a new candidate, even if "
+                              "artifacts.json and the per-model benchmark JSON are both correct.")
     parser.add_argument("--allow-publisher", action="append", default=[],
                          help="Add a publisher to the trusted allowlist for this run (repeatable).")
     args = parser.parse_args()
@@ -91,6 +154,8 @@ def main():
     with open(args.artifacts, "r") as f:
         artifacts_data = json.load(f)
 
+    new_bench_config_entries = {}
+
     existing_identities = set()
     for key, entry in artifacts_data.get("artifacts", {}).items():
         src = entry.get("source", {})
@@ -98,7 +163,7 @@ def main():
             existing_identities.add(base_model_identity(src["repo"], entry.get("filename", "")))
 
     count = 0
-    skipped = {"publisher": 0, "junk_repo": 0, "task_type": 0, "duplicate": 0, "size": 0, "error": 0}
+    skipped = {"publisher": 0, "junk_repo": 0, "task_type": 0, "duplicate": 0, "size": 0, "error": 0, "sharded": 0}
     for m in models:
         if count >= args.limit:
             break
@@ -133,6 +198,11 @@ def main():
             filename = getattr(file, "rfilename", "")
             size = getattr(file, "size", 0)
             if not filename.endswith(".gguf"):
+                continue
+
+            if SHARDED_GGUF_PATTERN.search(filename):
+                print(f"  SKIP (multi-part sharded GGUF, single-file harness can't load it): {filename}")
+                skipped["sharded"] += 1
                 continue
 
             tag_match = True
@@ -244,9 +314,16 @@ def main():
                 }
             }
 
-            bench_path = os.path.join(args.benchmarks, f"{model_name.lower().replace('.', '').replace('-', '_')}.json")
+            bench_key = model_name.lower().replace('.', '').replace('-', '_')
+            bench_path = os.path.join(args.benchmarks, f"{bench_key}.json")
             with open(bench_path, "w") as bf:
                 json.dump(bench_json, bf, indent=2)
+
+            # The step that's easy to miss (see module docstring): without
+            # this, "Select board models" can never find the new candidate.
+            new_bench_config_entries[bench_key] = {
+                "config": f"{args.benchmarks}/{bench_key}.json"
+            }
 
             existing_identities.add(identity)
             count += 1
@@ -255,7 +332,10 @@ def main():
     with open(args.artifacts, "w") as f:
         json.dump(artifacts_data, f, indent=2)
 
-    print(f"Determinex Conveyor Auto-Porter added {count} models.")
+    register_in_benchmark_config(args.benchmark_config, new_bench_config_entries)
+
+    print(f"Determinex Conveyor Auto-Porter added {count} models "
+          f"(artifacts.json + benchmark JSON + {args.benchmark_config} registration).")
     print(f"Skipped: {skipped}")
     print("NOTE: benchmark_default is written as False by design -- a human "
           "reviews and promotes each new candidate to the default board suite "

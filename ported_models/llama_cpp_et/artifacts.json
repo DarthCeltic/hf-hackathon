@@ -396,6 +396,42 @@
       "sha256": "7e943f7c53f0382a6fc41b6ee0c2def63ba4fded9ab8ed039cc9e2ab905e0edd",
       "size_bytes": 103769856,
       "note": "SmolVLM 256M vision projector (SigLIP ~93M + MLP). Q8_0 quantized. Must be loaded alongside smolvlm_256m_q8_gguf."
+    },
+    "gemma_2_2b_it_gguf_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "gemma-2-2b-it-GGUF-Q8_0",
+      "filename": "gemma-2-2b-it-Q8_0.gguf",
+      "env": "GEMMA_2_2B_IT_GGUF_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "bartowski/gemma-2-2b-it-GGUF",
+        "revision": "main",
+        "filename": "gemma-2-2b-it-Q8_0.gguf",
+        "url": "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q8_0.gguf"
+      },
+      "sha256": "2d448a9aab894b8e8e18168cf3f490cb9f65632222f29f93514ac9ecc754debe",
+      "size": 2784495456,
+      "local_cache": "local-artifacts/models/gemma-2-2b-it-Q8_0.gguf",
+      "board_path": "/data/models/gemma-2-2b-it-Q8_0.gguf"
+    },
+    "qwen25_15b_instruct_gguf_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "Qwen2.5-1.5B-Instruct-GGUF-Q8_0",
+      "filename": "qwen2.5-1.5b-instruct-q8_0.gguf",
+      "env": "QWEN25_15B_INSTRUCT_GGUF_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+        "revision": "main",
+        "filename": "qwen2.5-1.5b-instruct-q8_0.gguf",
+        "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q8_0.gguf"
+      },
+      "sha256": "d7efb072e7724d25048a4fda0a3e10b04bdef5d06b1403a1c93bd9f1240a63c8",
+      "size": 1894532128,
+      "local_cache": "local-artifacts/models/qwen2.5-1.5b-instruct-q8_0.gguf",
+      "board_path": "/data/models/qwen2.5-1.5b-instruct-q8_0.gguf"
     }
   }
 }

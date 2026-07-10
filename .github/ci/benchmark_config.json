@@ -36,6 +36,12 @@
     }
   },
   "models": {
+    "gemma_2_2b_it_gguf": {
+      "config": "ported_models/llama_cpp_et/benchmarks/gemma_2_2b_it_gguf.json"
+    },
+    "qwen25_15b_instruct_gguf": {
+      "config": "ported_models/llama_cpp_et/benchmarks/qwen25_15b_instruct_gguf.json"
+    },
     "yolo": {
       "reference_contract": ".github/ci/reference/yolo.json",
       "canonical_variant": "yolo_m30",
