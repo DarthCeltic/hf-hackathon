@@ -576,6 +576,31 @@ resolved_pr="$(GITHUB_EVENT_NAME=pull_request GITHUB_REF=refs/pull/1/merge GITHU
 if [[ "$resolved_pr" != "ci-actor" ]]; then
   bad "resolve_leaderboard_team.sh PR fallback returned '$resolved_pr'"
 fi
+resolver_tmp="$(mktemp -d)"
+cat > "$resolver_tmp/gh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  */pulls*) printf '%s\n' "${FAKE_PR_LOGIN:-}" ;;
+  *) printf '%s\n' "${FAKE_COMMIT_LOGIN:-}" ;;
+esac
+SH
+chmod +x "$resolver_tmp/gh"
+resolved_merge="$(PATH="$resolver_tmp:$PATH" FAKE_PR_LOGIN=participant FAKE_COMMIT_LOGIN=merger \
+  GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main GITHUB_ACTOR=ci-actor \
+  GITHUB_REPOSITORY=example/repo GH_TOKEN=test-token GITHUB_TOKEN= \
+  .github/ci/scripts/resolve_leaderboard_team.sh HEAD)"
+if [[ "$resolved_merge" != "participant" ]]; then
+  bad "resolve_leaderboard_team.sh merge returned '$resolved_merge', expected 'participant'"
+fi
+resolved_direct="$(PATH="$resolver_tmp:$PATH" FAKE_PR_LOGIN= FAKE_COMMIT_LOGIN=direct-author \
+  GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main GITHUB_ACTOR=ci-actor \
+  GITHUB_REPOSITORY=example/repo GH_TOKEN=test-token GITHUB_TOKEN= \
+  .github/ci/scripts/resolve_leaderboard_team.sh HEAD)"
+if [[ "$resolved_direct" != "direct-author" ]]; then
+  bad "resolve_leaderboard_team.sh direct push returned '$resolved_direct', expected 'direct-author'"
+fi
+rm -rf "$resolver_tmp"
 
 step "Selector runs against merge-base (if available)"
 base="$(git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD 2>/dev/null || true)"
