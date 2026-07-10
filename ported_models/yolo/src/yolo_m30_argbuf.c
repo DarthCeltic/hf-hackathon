@@ -369,10 +369,14 @@ int main(uintptr_t arg_area)
         /* cv1: 256 -> 256, 1x1 + SiLU */
         CONV_1x1(sppf, cv1_out, WP(WR_model_10_cv1_conv_Conv_W), WP(WR_model_10_cv1_conv_Conv_B), 256u, 9u, 16u, 256u, 1u);
 
-        /* Copy y1 into mutable buffer (will receive residuals). */
-        if (is_h0) {
-            for (uint32_t i = 0; i < 128u * HW; i++) y1[i] = y1_src[i];
-            evict((const void *)y1, 128u * HW * sizeof(float));
+        /* Copy y1 into mutable buffer (will receive residuals).
+         * Multi-hart: pure flat copy, each hart owns a disjoint contiguous
+         * index range -- no shared accumulator, no cross-hart read. */
+        if (yolo_is_compute(hid)) {
+            uint32_t i_lo, i_hi;
+            yolo_range(128u * HW, yolo_compute_idx(hid), &i_lo, &i_hi);
+            for (uint32_t i = i_lo; i < i_hi; i++) y1[i] = y1_src[i];
+            if (i_hi > i_lo) evict((const void *)(y1 + i_lo), (i_hi - i_lo) * sizeof(float));
             WAIT_CACHEOPS; FENCE;
         }
         MH_BARRIER();
@@ -380,37 +384,57 @@ int main(uintptr_t arg_area)
         /* qkv: 128 -> 256, 1x1 (no act).  Input = y1 (mutable copy). */
         CONV_1x1(y1, qkv, WP(WR_model_10_attn_qkv_conv_Conv_W), WP(WR_model_10_attn_qkv_conv_Conv_B), 128u, 9u, 16u, 256u, 0u);
 
-        /* Reshape qkv -> Q/K/V (single hart). */
-        if (is_h0) {
-            for (uint32_t h = 0; h < NHEAD; h++) {
-                const uint32_t base_c = h * 128u;
-                for (uint32_t c = 0; c < KEY_DIM; c++) {
-                    const float *src = qkv + (base_c + c) * HW;
-                    float *dst = Q + (h * KEY_DIM + c) * HW;
-                    for (uint32_t s = 0; s < HW; s++) dst[s] = src[s];
-                }
-                for (uint32_t c = 0; c < KEY_DIM; c++) {
-                    const float *src = qkv + (base_c + KEY_DIM + c) * HW;
-                    float *dst = K + (h * KEY_DIM + c) * HW;
-                    for (uint32_t s = 0; s < HW; s++) dst[s] = src[s];
-                }
-                for (uint32_t c = 0; c < HEAD_DIM; c++) {
-                    const float *src = qkv + (base_c + 2u*KEY_DIM + c) * HW;
-                    float *dst = V + (h * HEAD_DIM + c) * HW;
-                    for (uint32_t s = 0; s < HW; s++) dst[s] = src[s];
-                }
+        /* Reshape qkv -> Q/K/V, then V -> V_resh (multi-hart).
+         * Each (head,channel) unit owns its own disjoint HW-float (576B)
+         * contiguous span in Q/K/V/V_resh -- far larger than a cache line,
+         * so no two harts' writes can ever share a line. The V_resh copy
+         * uses the SAME per-hart unit range as the V write immediately
+         * before it, so each hart only ever reads back what it just wrote
+         * itself -- no cross-hart dependency, no extra barrier needed
+         * between the two steps. */
+        if (yolo_is_compute(hid)) {
+            const uint32_t cidx = yolo_compute_idx(hid);
+
+            const uint32_t nq = NHEAD * KEY_DIM;
+            uint32_t q_lo, q_hi;
+            yolo_range(nq, cidx, &q_lo, &q_hi);
+            for (uint32_t u = q_lo; u < q_hi; u++) {
+                const uint32_t h = u / KEY_DIM, c = u % KEY_DIM;
+                const float *src = qkv + (h * 128u + c) * HW;
+                float *dst = Q + u * HW;
+                for (uint32_t s = 0; s < HW; s++) dst[s] = src[s];
             }
-            for (uint32_t h = 0; h < NHEAD; h++) {
-                for (uint32_t c = 0; c < HEAD_DIM; c++) {
-                    const float *src = V + (h * HEAD_DIM + c) * HW;
-                    float *dst = V_resh + (h * HEAD_DIM + c) * HW;
-                    for (uint32_t s = 0; s < HW; s++) dst[s] = src[s];
-                }
+            if (q_hi > q_lo) evict((const void *)(Q + q_lo * HW), (q_hi - q_lo) * HW * sizeof(float));
+
+            const uint32_t nk = NHEAD * KEY_DIM;
+            uint32_t k_lo, k_hi;
+            yolo_range(nk, cidx, &k_lo, &k_hi);
+            for (uint32_t u = k_lo; u < k_hi; u++) {
+                const uint32_t h = u / KEY_DIM, c = u % KEY_DIM;
+                const float *src = qkv + (h * 128u + KEY_DIM + c) * HW;
+                float *dst = K + u * HW;
+                for (uint32_t s = 0; s < HW; s++) dst[s] = src[s];
             }
-            evict((const void *)Q,      NHEAD * KEY_DIM * HW * sizeof(float));
-            evict((const void *)K,      NHEAD * KEY_DIM * HW * sizeof(float));
-            evict((const void *)V,      NHEAD * HEAD_DIM * HW * sizeof(float));
-            evict((const void *)V_resh, 128u * HW * sizeof(float));
+            if (k_hi > k_lo) evict((const void *)(K + k_lo * HW), (k_hi - k_lo) * HW * sizeof(float));
+
+            const uint32_t nv = NHEAD * HEAD_DIM;
+            uint32_t v_lo, v_hi;
+            yolo_range(nv, cidx, &v_lo, &v_hi);
+            for (uint32_t u = v_lo; u < v_hi; u++) {
+                const uint32_t h = u / HEAD_DIM, c = u % HEAD_DIM;
+                const float *src = qkv + (h * 128u + 2u*KEY_DIM + c) * HW;
+                float *dst = V + u * HW;
+                for (uint32_t s = 0; s < HW; s++) dst[s] = src[s];
+            }
+            for (uint32_t u = v_lo; u < v_hi; u++) {
+                const float *src = V + u * HW;
+                float *dst = V_resh + u * HW;
+                for (uint32_t s = 0; s < HW; s++) dst[s] = src[s];
+            }
+            if (v_hi > v_lo) {
+                evict((const void *)(V + v_lo * HW),      (v_hi - v_lo) * HW * sizeof(float));
+                evict((const void *)(V_resh + v_lo * HW), (v_hi - v_lo) * HW * sizeof(float));
+            }
             WAIT_CACHEOPS; FENCE;
         }
         MH_BARRIER();
