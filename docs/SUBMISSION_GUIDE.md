@@ -112,6 +112,58 @@ with main. After a trusted YOLO input changes on `main`, CI automatically re-run
 the latest trusted Actions attempt for every open YOLO implementation PR. The
 check stays attached to the existing participant commit; no rebase is needed.
 
+Llama 3.2 1B optimization PRs publish `trusted-model/llama32_1b`. The workflow
+is loaded from `main`, runs the participant's exact `llama.cpp-et` submodule
+commit, and keeps the model identity, workloads, quality limits, runner, and
+leaderboard baselines under main-branch control. A passing result requires:
+
+- full ET offload and deterministic generation from the contracted model;
+- ET WikiText-2 PPL within 2% of a CPU run of the same GGUF;
+- PPL no more than 20% worse than the best leaderboard PPL;
+- three stable PP256/TG128 runs, with decode throughput at least 1% faster than
+  paired current main and strictly faster than the best score made under the
+  same measurement contract;
+- for a shared runtime change, passing PPL and strictly better decode
+  throughput for every existing `llama.cpp-et` leaderboard model.
+
+Runtime optimizations repin
+`ported_models/llama_cpp_et/src/llama.cpp-et`. A different quantized GGUF is
+declared in `ported_models/llama_cpp_et/submissions/llama32_1b.json`; do not
+replace the trusted benchmark or CI files. The manifest format is:
+
+```json
+{
+  "schema_version": 1,
+  "model": "llama32_1b",
+  "base_model": "Llama-3.2-1B-Instruct",
+  "license": "llama3.2",
+  "variant": "Llama-3.2-1B-Instruct-Q4_K_M",
+  "quantization": "Q4_K_M",
+  "artifact": {
+    "source": {
+      "repo": "your-hf-account/your-pinned-gguf-repo",
+      "revision": "40-character-hugging-face-commit-sha",
+      "filename": "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+    },
+    "sha256": "64-character-file-sha256",
+    "size_bytes": 0
+  },
+  "recipe": "ported_models/llama_cpp_et/docs/your-quantization-recipe.md",
+  "tuning": {
+    "batch_size": 256,
+    "ubatch_size": 128,
+    "flash_attn": false
+  }
+}
+```
+
+Use the real positive file size in `size_bytes`. The artifact must be public,
+content-addressed by commit and SHA-256, and reproducible from the committed
+recipe. First-time contributors wait for maintainer approval; contributors who
+have already participated are queued automatically. Main-owned contract or
+leaderboard updates automatically invalidate and re-run open affected PRs, so
+a rebase is only needed for a real source conflict.
+
 A new model using an existing main-owned runner and scorer can be exercised by
 branch CI from a declarative benchmark entry. A submission that introduces a
 new evaluator, host oracle, or workflow is provisional: maintainers review and

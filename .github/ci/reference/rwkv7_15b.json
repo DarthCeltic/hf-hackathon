@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "model": "rwkv7_15b",
+  "track": "reproducible_runtime_migration",
+  "legacy_quality_baseline_compatible": true,
+  "artifact": {
+    "variant": "rwkv7-1.5B-world-q8_0",
+    "huggingface_repo": "Mungert/rwkv7-1.5B-world-GGUF",
+    "revision": "c8a25c8d349fdf76837c68bfc73c0b953f41b3ce",
+    "filename": "rwkv7-1.5B-world-q8_0.gguf",
+    "sha256": "daa7eb795f8a4d956bc305f4ca6f65221f03a6967ab9cdfe77b7a005f499ddee"
+  },
+  "runtime": {
+    "device": "ET",
+    "gpu_layers": 99,
+    "fit": false,
+    "kv_offload": false,
+    "require_full_layer_offload": true,
+    "note": "The committed ET backend cannot execute the recurrent-state CPY operation. R/S state remains host-resident while all model layers stay configured for ET offload."
+  },
+  "quality": {
+    "corpus": "wikitext-2-raw-v1/test",
+    "context_size": 128,
+    "chunks": 4,
+    "max_ppl_regression": 0.2
+  }
+}

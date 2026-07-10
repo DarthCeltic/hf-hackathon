@@ -7,12 +7,14 @@
     "source_artifact": "llama_cpp_source"
   },
   "artifacts_file": "../artifacts.json",
+  "reference_contract": ".github/ci/reference/rwkv7_15b.json",
   "canonical_variant": "rwkv7-1.5B-world-q8_0",
   "score": {
     "metric": "tokens_per_second",
     "label": "Decode tokens/s",
     "higher_is_better": true
   },
+  "note": "Keep RWKV recurrent R/S state on the host because ET cannot execute its CPY operation. All model layers remain configured for ET offload.",
   "llama_server": {
     "source_artifact": "llama_cpp_source",
     "model_artifact": "rwkv7_15b_world_q8_gguf",
@@ -36,6 +38,11 @@
     "temperature": 0,
     "ignore_eos": true,
     "min_completion_tokens": 32,
+    "extra_args": [
+      "-fit",
+      "off",
+      "-nkvo"
+    ],
     "perplexity": {
       "enabled": true,
       "perplexity_artifact": "llama_perplexity",
@@ -46,7 +53,12 @@
       "timeout_s": 360,
       "min_ppl": 1.0,
       "max_ppl": 1000.0,
-      "chunks": 4
+      "chunks": 4,
+      "extra_args": [
+        "-fit",
+        "off",
+        "-nkvo"
+      ]
     }
   }
 }

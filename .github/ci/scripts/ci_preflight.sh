@@ -183,6 +183,8 @@ import json, sys
 from pathlib import Path
 paths = [
     Path(".github/ci/benchmark_config.json"),
+    Path(".github/ci/reference/llama32_1b.json"),
+    Path(".github/ci/reference/rwkv7_15b.json"),
     Path(".github/ci/reference/yolo.json"),
 ]
 cfg = json.load(open(paths[0]))
@@ -197,6 +199,45 @@ for p in paths:
     except Exception as exc:
         print(f"FAIL: invalid JSON {p}: {exc}", file=sys.stderr); bad = True
 sys.exit(1 if bad else 0)
+PY
+
+step "Trusted Llama contract covers the shared leaderboard runtime"
+python3 - <<'PY' || bad "trusted Llama contract or build definition is incomplete"
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, ".github/ci/scripts")
+from benchmark_config_helpers import load_config
+
+contract = json.loads(Path(".github/ci/reference/llama32_1b.json").read_text())
+cfg = load_config(Path(".github/ci/benchmark_config.json"))
+target = cfg["models"][contract["model"]]
+source_artifact = target["framework"]["source_artifact"]
+expected = set()
+for model, model_cfg in cfg["models"].items():
+    if model == contract["model"]:
+        continue
+    if model_cfg.get("framework", {}).get("source_artifact") != source_artifact:
+        continue
+    data = Path("data") / f"{model}.json"
+    if not data.is_file():
+        continue
+    entries = json.loads(data.read_text()).get("entries", [])
+    if any(isinstance(entry.get("tokens_per_second"), (int, float)) for entry in entries):
+        expected.add(model)
+
+actual = set(contract["runtime"]["regression_models"])
+assert actual == expected, (sorted(actual), sorted(expected))
+build = target["artifacts"]["llama_cpp_build"]["build"]
+assert build["targets"] == ["llama-server", "llama-perplexity", "llama-bench"]
+
+rwkv = cfg["models"]["rwkv7_15b"]
+assert rwkv["reference_contract"] == ".github/ci/reference/rwkv7_15b.json"
+assert rwkv["llama_server"]["gpu_layers"] == 99
+assert rwkv["llama_server"].get("require_full_offload", True)
+assert "-nkvo" in rwkv["llama_server"]["extra_args"]
+assert "-nkvo" in rwkv["llama_server"]["perplexity"]["extra_args"]
 PY
 
 step "YOLO reference contract and public COCO fixtures"
@@ -453,6 +494,7 @@ if python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "
   bad "leaderboard_gate.py should fail uncovered runtime source changes"
 fi
 python3 - "$tmp" <<'PY'
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -466,6 +508,9 @@ score = {
     "passed": True,
     "tokens_per_second": baseline["tokens_per_second"] + 1.0,
     "perplexity": baseline["perplexity"] * 1.1,
+    "validation_contract_sha256": hashlib.sha256(
+        Path(".github/ci/reference/llama32_1b.json").read_bytes()
+    ).hexdigest(),
 }
 (tmp / "score-llama32_1b.json").write_text(json.dumps(score) + "\n")
 PY
@@ -532,6 +577,84 @@ PY
 if python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-contract-fail.md" \
   --target board --models "yolo" --base-ref HEAD >/dev/null; then
   bad "leaderboard_gate.py should reject a score from another validation contract"
+fi
+
+step "Trusted Llama merge gate fixtures"
+trusted_scores="$tmp/trusted-llama-scores"
+mkdir -p "$trusted_scores"
+python3 - "$tmp/trusted-llama-baseline.json" "$trusted_scores" <<'PY' \
+  || bad "could not create trusted Llama gate fixtures"
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+baseline_path = Path(sys.argv[1])
+scores_dir = Path(sys.argv[2])
+contract_path = Path(".github/ci/reference/llama32_1b.json")
+contract = json.loads(contract_path.read_text())
+contract_sha = hashlib.sha256(contract_path.read_bytes()).hexdigest()
+
+
+def best(model, key, *, higher):
+    entries = json.loads((Path("data") / f"{model}.json").read_text())["entries"]
+    values = [float(entry[key]) for entry in entries if isinstance(entry.get(key), (int, float))]
+    return (max if higher else min)(values)
+
+
+model = contract["model"]
+target_speed = best(model, "tokens_per_second", higher=True)
+target_ppl = best(model, "perplexity", higher=False)
+baseline_path.write_text(json.dumps({
+    "model": model,
+    "passed": True,
+    "tokens_per_second": target_speed,
+    "perplexity": target_ppl,
+    "validation_contract_sha256": contract_sha,
+}) + "\n")
+(scores_dir / f"score-{model}.json").write_text(json.dumps({
+    "model": model,
+    "passed": True,
+    "tokens_per_second": target_speed * 1.02,
+    "perplexity": target_ppl * 1.10,
+    "validation_contract_sha256": contract_sha,
+}) + "\n")
+for regression in contract["runtime"]["regression_models"]:
+    speed = best(regression, "tokens_per_second", higher=True)
+    ppl = best(regression, "perplexity", higher=False)
+    (scores_dir / f"score-{regression}.json").write_text(json.dumps({
+        "model": regression,
+        "passed": True,
+        "tokens_per_second": speed * 1.01,
+        "perplexity": ppl * 1.10,
+    }) + "\n")
+PY
+trusted_regressions="$(jq -r '.runtime.regression_models | join(" ")' .github/ci/reference/llama32_1b.json)"
+python3 .github/ci/scripts/trusted_llama32_gate.py \
+  --contract .github/ci/reference/llama32_1b.json \
+  --baseline-score "$tmp/trusted-llama-baseline.json" \
+  --candidate-scores-dir "$trusted_scores" \
+  --regression-models "$trusted_regressions" \
+  --output "$tmp/trusted-llama-pass.md" >/dev/null \
+  || bad "trusted Llama gate rejected a valid improvement fixture"
+python3 - "$trusted_scores/score-tinyllama11b.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+score = json.loads(path.read_text())
+baseline = json.loads(Path("data/tinyllama11b.json").read_text())["entries"][0]
+score["tokens_per_second"] = baseline["tokens_per_second"]
+path.write_text(json.dumps(score) + "\n")
+PY
+if python3 .github/ci/scripts/trusted_llama32_gate.py \
+  --contract .github/ci/reference/llama32_1b.json \
+  --baseline-score "$tmp/trusted-llama-baseline.json" \
+  --candidate-scores-dir "$trusted_scores" \
+  --regression-models "$trusted_regressions" \
+  --output "$tmp/trusted-llama-fail.md" >/dev/null; then
+  bad "trusted Llama gate accepted a shared-runtime regression"
 fi
 python3 - <<'PY' || bad "leaderboard_gate.py YOLO validation-only classification failed"
 import copy
