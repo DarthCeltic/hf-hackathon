@@ -284,7 +284,17 @@ def main():
                     "host": "127.0.0.1",
                     "port": 18081,
                     "device": "ET",
-                    "gpu_layers": 1,
+                    # 99 is llama.cpp's "offload every layer" sentinel -- the
+                    # convention every other benchmark_default:true config in
+                    # this repo uses (llama32_1b.json, qwen25_05b.json, etc).
+                    # The ONE exception (lfm25.json) intentionally offloads
+                    # only 1 layer, but pairs it with "require_full_offload":
+                    # false to tell the leaderboard gate that's expected.
+                    # Found live on this run: gpu_layers=1 without that flag
+                    # made the gate correctly fail both new candidates
+                    # ("expected full GPU offload, got 1/27" / "1/29") --
+                    # they were never actually running on the accelerator.
+                    "gpu_layers": 99,
                     "ctx_size": 2048,
                     "batch_size": 256,
                     "ubatch_size": 128,

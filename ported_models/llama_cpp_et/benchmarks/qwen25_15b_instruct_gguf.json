@@ -22,7 +22,7 @@
     "host": "127.0.0.1",
     "port": 18081,
     "device": "ET",
-    "gpu_layers": 1,
+    "gpu_layers": 99,
     "ctx_size": 2048,
     "batch_size": 256,
     "ubatch_size": 128,
