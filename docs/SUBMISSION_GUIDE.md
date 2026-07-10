@@ -82,6 +82,42 @@ touched-model selection when updating leaderboard data. External fork PRs reach
 the board runner only after GitHub's external-contributor workflow approval gate
 releases the run.
 
+## Branch CI and Trusted Gates
+
+Submission-branch CI remains available for proposed models, manifests, and new
+benchmark integrations. It is useful development evidence, but a branch-defined
+workflow is not by itself a trusted leaderboard decision.
+
+Established YOLO optimization PRs also publish `trusted-yolo/main-gate`. Its
+reusable workflow is resolved from `main`; the job checks out the current main
+harness and applies only these participant-owned paths:
+
+- regular implementation files under `ported_models/yolo/src/`
+- `ported_models/yolo/assets/yolo/weights_region.bin`
+
+The benchmark config, host reference, COCO fixtures, scorer, runner, validation
+contract, and leaderboard baseline all remain those from `main`. Other PR paths
+are not copied into the trusted candidate. This still permits operator fusion,
+repacking or replacing weights, mixed precision, layout changes, generated
+headers, and additional implementation fragments referenced by the canonical
+entry point.
+
+A fresh run uses `main` as it exists when the trusted job starts. If the YOLO
+harness, contract, implementation base, fixtures, or leaderboard baseline
+changes while the board is running, the gate fails as stale and asks for a full
+re-run. Unrelated main changes do not invalidate the result. Re-running all jobs
+resolves the reusable workflow and baseline from current main, so the
+participant does not need to rebase unless their implementation patch conflicts
+with main. After a trusted YOLO input changes on `main`, CI automatically re-runs
+the latest trusted Actions attempt for every open YOLO implementation PR. The
+check stays attached to the existing participant commit; no rebase is needed.
+
+A new model using an existing main-owned runner and scorer can be exercised by
+branch CI from a declarative benchmark entry. A submission that introduces a
+new evaluator, host oracle, or workflow is provisional: maintainers review and
+merge that measurement method before its results become a trusted leaderboard
+baseline.
+
 The `Leaderboard gate` check is the merge signal for benchmarked submissions.
 Every selected model must produce a passing board score and strictly improve the
 current base-branch leaderboard value for that model's primary metric. Higher is
@@ -97,7 +133,15 @@ models, but they do not need to improve the leaderboard runtime.
 
 For ELF benchmark models, a passing board score also includes the configured
 dump accuracy gate in `.github/ci/benchmark_config.json`. The current gates
-check YOLO against expected detections across a five-image static RGB suite.
+check YOLO against host-generated detections from the pinned reference model on
+five public, hash-pinned COCO images. Correctness is an eligibility gate; only a
+passing result is compared by mean end-to-end latency.
+
+For YOLO implementation PRs, use the `trusted-yolo/main-gate` commit status as
+the merge signal. It is written on the participant's exact head SHA by the
+main-owned workflow. The gate additionally requires an existing main-branch
+score produced by the same validation-contract hash; a participant run cannot
+silently establish its own baseline.
 
 For models that run `llama-perplexity`, the same gate also protects quality:
 the PR score must include PPL, and it must be no more than 20% worse than the
