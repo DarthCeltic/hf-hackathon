@@ -727,45 +727,66 @@ int main(uintptr_t arg_area)
         yolo_range(num_blocks, cidx, &blocks_lo, &blocks_hi);
         const uint32_t a_lo = blocks_lo * 16u, a_hi = blocks_hi * 16u;
 
-        for (uint32_t a = a_lo; a < a_hi; a++) {
-            const float *reg_in;
-            const float *cls_in;
-            uint32_t W, s, HW_cur;
-            float stride;
-            if (a < HW0)             { reg_in = reg0; cls_in = cls0; W = 64u; stride = 8.0f;  s = a;             HW_cur = HW0; }
-            else if (a < HW0 + HW1)  { reg_in = reg1; cls_in = cls1; W = 32u; stride = 16.0f; s = a - HW0;       HW_cur = HW1; }
-            else                     { reg_in = reg2; cls_in = cls2; W = 16u; stride = 32.0f; s = a - HW0 - HW1; HW_cur = 144u; }
+        /* Select reg_in/cls_in/W/stride ONCE PER SCALE (3 segments max per
+         * hart), not once per anchor. Both scale boundaries (HW0=2304,
+         * HW0+HW1=2880) are exact multiples of 16, so intersecting a
+         * hart's already-16-aligned [a_lo,a_hi) with a scale's range
+         * always yields another 16-aligned segment -- no new cache-line
+         * risk. A per-anchor branch here (evaluated up to 3024 times
+         * across all harts) was a real, avoidable hot-loop cost on top of
+         * the actual DFL/box-decode work. */
+        const uint32_t seg_off[3] = { 0u, HW0, HW0 + HW1 };
+        const uint32_t seg_end[3] = { HW0, HW0 + HW1, 3024u };
+        const float *seg_reg[3] = { reg0, reg1, reg2 };
+        const float *seg_cls[3] = { cls0, cls1, cls2 };
+        const uint32_t seg_W[3] = { 64u, 32u, 16u };
+        const uint32_t seg_HW[3] = { HW0, HW1, 144u };
+        const float seg_stride[3] = { 8.0f, 16.0f, 32.0f };
 
-            float coords[4];
-            for (uint32_t e = 0; e < 4u; e++) {
-                float row[16];
-                float m = -3.4e38f;
-                for (uint32_t b = 0; b < 16u; b++) {
-                    row[b] = reg_in[(e*16u + b) * HW_cur + s];
-                    if (row[b] > m) m = row[b];
+        for (uint32_t k = 0; k < 3u; k++) {
+            const uint32_t seg_lo = a_lo > seg_off[k] ? a_lo : seg_off[k];
+            const uint32_t seg_hi = a_hi < seg_end[k] ? a_hi : seg_end[k];
+            if (seg_hi <= seg_lo) continue;
+
+            const float *reg_in = seg_reg[k];
+            const float *cls_in = seg_cls[k];
+            const uint32_t W = seg_W[k], HW_cur = seg_HW[k], anchor_off = seg_off[k];
+            const float stride = seg_stride[k];
+
+            for (uint32_t a = seg_lo; a < seg_hi; a++) {
+                const uint32_t s = a - anchor_off;
+
+                float coords[4];
+                for (uint32_t e = 0; e < 4u; e++) {
+                    float row[16];
+                    float m = -3.4e38f;
+                    for (uint32_t b = 0; b < 16u; b++) {
+                        row[b] = reg_in[(e*16u + b) * HW_cur + s];
+                        if (row[b] > m) m = row[b];
+                    }
+                    float sumexp = 0.0f;
+                    for (uint32_t b = 0; b < 16u; b++) { row[b] = my_expf(row[b] - m); sumexp += row[b]; }
+                    const float inv = fast_recip(sumexp);
+                    float ev = 0.0f;
+                    for (uint32_t b = 0; b < 16u; b++) ev += row[b] * inv * (float)b;
+                    coords[e] = ev;
                 }
-                float sumexp = 0.0f;
-                for (uint32_t b = 0; b < 16u; b++) { row[b] = my_expf(row[b] - m); sumexp += row[b]; }
-                const float inv = fast_recip(sumexp);
-                float ev = 0.0f;
-                for (uint32_t b = 0; b < 16u; b++) ev += row[b] * inv * (float)b;
-                coords[e] = ev;
-            }
 
-            const uint32_t h = s / W, w = s % W;
-            const float a_cx = (float)w + 0.5f;
-            const float a_cy = (float)h + 0.5f;
-            const float left   = (a_cx - coords[0]) * stride;
-            const float top    = (a_cy - coords[1]) * stride;
-            const float right  = (a_cx + coords[2]) * stride;
-            const float bottom = (a_cy + coords[3]) * stride;
-            final_out[0u * 3024u + a] = (left + right) * 0.5f;
-            final_out[1u * 3024u + a] = (top + bottom) * 0.5f;
-            final_out[2u * 3024u + a] = right - left;
-            final_out[3u * 3024u + a] = bottom - top;
+                const uint32_t h = s / W, w = s % W;
+                const float a_cx = (float)w + 0.5f;
+                const float a_cy = (float)h + 0.5f;
+                const float left   = (a_cx - coords[0]) * stride;
+                const float top    = (a_cy - coords[1]) * stride;
+                const float right  = (a_cx + coords[2]) * stride;
+                const float bottom = (a_cy + coords[3]) * stride;
+                final_out[0u * 3024u + a] = (left + right) * 0.5f;
+                final_out[1u * 3024u + a] = (top + bottom) * 0.5f;
+                final_out[2u * 3024u + a] = right - left;
+                final_out[3u * 3024u + a] = bottom - top;
 
-            for (uint32_t c = 0; c < 80u; c++) {
-                final_out[(4u + c) * 3024u + a] = cls_in[c * HW_cur + s];
+                for (uint32_t c = 0; c < 80u; c++) {
+                    final_out[(4u + c) * 3024u + a] = cls_in[c * HW_cur + s];
+                }
             }
         }
         if (a_hi > a_lo) {
