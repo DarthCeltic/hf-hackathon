@@ -122,6 +122,8 @@ jobs:
           while IFS= read -r path; do
             case "$path" in
               .github/workflows/*|\
+              .github/ci/reference/llama32_1b.json|\
+              .github/ci/reference/rwkv7_15b.json|\
               .github/ci/reference/yolo.json|\
               .github/ci/platform/deploy/*|\
               .github/ci/scripts/benchmark_config_helpers.py|\
@@ -130,11 +132,18 @@ jobs:
               .github/ci/scripts/leaderboard_gate.py|\
               .github/ci/scripts/merge_leaderboard.py|\
               .github/ci/scripts/prepare_benchmark_inputs.sh|\
+              .github/ci/scripts/prepare_trusted_llama32_candidate.py|\
               .github/ci/scripts/prepare_trusted_yolo_tree.py|\
+              .github/ci/scripts/refresh_trusted_llama32_prs.sh|\
               .github/ci/scripts/refresh_trusted_yolo_prs.sh|\
+              .github/ci/scripts/run_llama_server_benchmark.py|\
               .github/ci/scripts/run_model_benchmark.sh|\
+              .github/ci/scripts/run_trusted_llama_benchmark.py|\
+              .github/ci/scripts/run_trusted_llama32_candidate.sh|\
               .github/ci/scripts/run_yolo_host_reference.sh|\
               .github/ci/scripts/score_results.py|\
+              .github/ci/scripts/trusted_llama32_gate.py|\
+              .github/ci/scripts/trusted_llama32_input_hash.sh|\
               .github/ci/scripts/trusted_yolo_input_hash.sh|\
               scripts/run_sysemu_model_ports.sh|\
               ported_models/yolo/tools/host_reference.py|\
@@ -855,3 +864,45 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: .github/ci/scripts/refresh_trusted_yolo_prs.sh "${{ github.event.before }}" HEAD
+
+  invalidate-trusted-llama32-prs:
+    name: Invalidate stale trusted Llama checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Mark open Llama PRs pending when trusted inputs changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/ci/scripts/refresh_trusted_llama32_prs.sh "${{ github.event.before }}" HEAD pending-only
+
+  refresh-trusted-llama32-prs:
+    name: Refresh open trusted Llama checks
+    needs: [select-board-models, board-benchmark, update-leaderboard]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Re-run open Llama PRs when trusted inputs changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/ci/scripts/refresh_trusted_llama32_prs.sh "${{ github.event.before }}" HEAD

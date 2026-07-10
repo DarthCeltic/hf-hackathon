@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "model": "llama32_1b",
+  "track": "quality_constrained_quantization",
+  "legacy_quality_baseline_compatible": true,
+  "base_model": {
+    "name": "Llama-3.2-1B-Instruct",
+    "architecture_prefix": "llama 1B",
+    "parameter_count": 1235814432,
+    "license": "llama3.2",
+    "tokenizer_must_match_base": true
+  },
+  "canonical_artifact": {
+    "variant": "Llama-3.2-1B-Instruct-Q8_0",
+    "huggingface_repo": "lmstudio-community/Llama-3.2-1B-Instruct-GGUF",
+    "revision": "199151125cf15a129ab3b548b26afeed976df066",
+    "filename": "Llama-3.2-1B-Instruct-Q8_0.gguf",
+    "sha256": "0abee8eed408d4a73a6f88e23e4ec349aef998ae0fe110e4dd1c724df5019e47"
+  },
+  "candidate_manifest": "ported_models/llama_cpp_et/submissions/llama32_1b.json",
+  "artifact_policy": {
+    "max_size_bytes": 3000000000,
+    "allowed_quantizations": [
+      "Q8_0",
+      "Q6_K",
+      "Q5_K_M",
+      "Q5_0",
+      "Q4_K_M",
+      "Q4_0",
+      "custom"
+    ]
+  },
+  "runtime": {
+    "submodule_path": "ported_models/llama_cpp_et/src/llama.cpp-et",
+    "allowed_source_host": "github.com",
+    "required_device": "ET",
+    "required_gpu_layers": 99,
+    "require_full_offload": true,
+    "regression_models": [
+      "lfm25",
+      "gemma3n_e2b",
+      "tinyllama11b",
+      "rwkv7_15b",
+      "qwen25_05b",
+      "qwen3_8b",
+      "deepseek_r1_15b"
+    ]
+  },
+  "performance": {
+    "prompt_tokens": 256,
+    "generation_tokens": 128,
+    "batch_size": 256,
+    "ubatch_size": 128,
+    "repetitions": 3,
+    "min_relative_improvement": 0.01,
+    "max_sample_cv": 0.05,
+    "primary_metric": "tokens_per_second"
+  },
+  "generation_validation": {
+    "prompt": "Repeat this token sequence without commentary: OK OK OK OK OK OK OK OK OK OK",
+    "max_tokens": 96,
+    "temperature": 0,
+    "ignore_eos": true,
+    "min_completion_tokens": 32
+  },
+  "quality": {
+    "corpus_artifact": "wikitext2_raw_test",
+    "context_size": 128,
+    "batch_size": 128,
+    "ubatch_size": 128,
+    "chunks": 4,
+    "max_ppl_regression": 0.2,
+    "max_et_cpu_ppl_relative_difference": 0.02
+  },
+  "allowed_tuning": {
+    "batch_size": {
+      "min": 32,
+      "max": 2048
+    },
+    "ubatch_size": {
+      "min": 16,
+      "max": 512
+    },
+    "flash_attn": [
+      true,
+      false
+    ]
+  }
+}

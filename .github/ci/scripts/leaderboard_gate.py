@@ -260,6 +260,21 @@ def validation_contract_sha256(cfg: dict[str, Any], model: str) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def contract_allows_legacy_quality_baseline(cfg: dict[str, Any], model: str) -> bool:
+    model_cfg = cfg.get("models", {}).get(model, {})
+    value = model_cfg.get("reference_contract")
+    if not value:
+        return False
+    path = Path(value)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    try:
+        contract = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(contract.get("legacy_quality_baseline_compatible", False))
+
+
 def load_json_from_ref(path: str, base_ref: str) -> Any | None:
     if base_ref:
         proc = subprocess.run(
@@ -445,6 +460,7 @@ def main() -> int:
         metric, label, higher = metric_config(cfg, model)
         score_path = scores_dir / f"score-{model}.json"
         entries = leaderboard_entries(model, args.base_ref)
+        quality_entries = list(entries)
         required_variant = baseline_variant(cfg, model)
         if required_variant:
             entries = [entry for entry in entries if entry.get("variant") == required_variant]
@@ -455,6 +471,8 @@ def main() -> int:
                 for entry in entries
                 if entry.get("validation_contract_sha256") == required_contract_sha
             ]
+            if not contract_allows_legacy_quality_baseline(cfg, model):
+                quality_entries = list(entries)
         baseline = best_entry(entries, metric, higher)
         baseline_value = float(baseline[metric]) if baseline else None
         baseline_text = fmt_metric(baseline_value, metric)
@@ -462,7 +480,7 @@ def main() -> int:
         if baseline_team:
             baseline_text = f"{baseline_text} ({cell(baseline_team, limit=40)})"
         requires_ppl = model_requires_ppl(cfg, model)
-        baseline_ppl = best_ppl_entry(entries)
+        baseline_ppl = best_ppl_entry(quality_entries)
         baseline_ppl_value = float(baseline_ppl["perplexity"]) if baseline_ppl else None
 
         if not score_path.is_file():

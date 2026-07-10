@@ -65,10 +65,34 @@ if [[ "$runner" == "llama_server" ]]; then
 
   run_dir="${BENCHMARK_OUTPUT}/llama-${model}"
   score_out="${BENCHMARK_OUTPUT}/score-${model}.json"
-  python3 "${REPO_ROOT}/.github/ci/scripts/run_llama_server_benchmark.py" \
-    --model "$model" \
-    --results-dir "$run_dir" \
-    --output "$score_out"
+  reference_contract="$(python3 - "$model" "$BENCHMARK_CONFIG" "$REPO_ROOT" <<'PY'
+import sys
+
+model, cfg_path, repo = sys.argv[1:4]
+sys.path.insert(0, f"{repo}/.github/ci/scripts")
+from benchmark_config_helpers import load_config
+
+print(load_config(cfg_path)["models"][model].get("reference_contract", ""))
+PY
+)"
+  if [[ "$model" == "llama32_1b" && -n "$reference_contract" ]]; then
+    trusted_args=()
+    if [[ -n "${TRUSTED_LLAMA_CPU_PPL_BIN:-}" ]]; then
+      trusted_args+=(--cpu-reference-bin "$TRUSTED_LLAMA_CPU_PPL_BIN")
+    fi
+    python3 "${REPO_ROOT}/.github/ci/scripts/run_trusted_llama_benchmark.py" \
+      --model "$model" \
+      --config "$BENCHMARK_CONFIG" \
+      --contract "${REPO_ROOT}/${reference_contract}" \
+      --results-dir "$run_dir" \
+      --output "$score_out" \
+      "${trusted_args[@]}"
+  else
+    python3 "${REPO_ROOT}/.github/ci/scripts/run_llama_server_benchmark.py" \
+      --model "$model" \
+      --results-dir "$run_dir" \
+      --output "$score_out"
+  fi
   exit 0
 fi
 

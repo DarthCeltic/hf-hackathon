@@ -11,6 +11,16 @@ set -euo pipefail
 DEST="${SOC3_DEST:-/root/et-jobs-deploy}"
 ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
 BENCHMARK_ARTIFACT_ROOT="${BENCHMARK_ARTIFACT_ROOT:-${ROOT}/local-artifacts/model-port-benchmarks}"
+if [[ -z "${LLAMA_CPP_ET_SOURCE_REVISION:-}" ]]; then
+  _llama_source="${ROOT}/ported_models/llama_cpp_et/src/llama.cpp-et"
+  if [[ -d "${_llama_source}" ]]; then
+    LLAMA_CPP_ET_SOURCE_REVISION="$(git -C "${_llama_source}" rev-parse HEAD 2>/dev/null || true)"
+  fi
+  if [[ -z "${LLAMA_CPP_ET_SOURCE_REVISION:-}" ]]; then
+    LLAMA_CPP_ET_SOURCE_REVISION="$(git -C "${ROOT}" ls-tree HEAD ported_models/llama_cpp_et/src/llama.cpp-et 2>/dev/null | awk '{print $3}')"
+  fi
+  export LLAMA_CPP_ET_SOURCE_REVISION
+fi
 MODELS="${MODELS:-}"
 MODELS="$(python3 "${ROOT}/.github/ci/scripts/benchmark_config_helpers.py" --target board --models "$MODELS" --format space)"
 # shellcheck source=soc3-ssh.sh
@@ -111,6 +121,15 @@ fi
 if [[ -n "${SOC3_FAIL_ON_MODEL_FAILURE:-}" ]]; then
   REMOTE_ENV+=("SOC3_FAIL_ON_MODEL_FAILURE=$(printf "%q" "${SOC3_FAIL_ON_MODEL_FAILURE}")")
 fi
+if [[ -n "${LLAMA_CPP_ET_SOURCE_REVISION:-}" ]]; then
+  REMOTE_ENV+=("LLAMA_CPP_ET_SOURCE_REVISION=$(printf "%q" "${LLAMA_CPP_ET_SOURCE_REVISION}")")
+fi
+if [[ -n "${TRUSTED_LLAMA_BUILD_KEY:-}" ]]; then
+  REMOTE_ENV+=("TRUSTED_LLAMA_BUILD_KEY=$(printf "%q" "${TRUSTED_LLAMA_BUILD_KEY}")")
+fi
+if [[ -n "${TRUSTED_LLAMA_CPU_PPL_BIN:-}" ]]; then
+  REMOTE_ENV+=("TRUSTED_LLAMA_CPU_PPL_BIN=$(printf "%q" "${TRUSTED_LLAMA_CPU_PPL_BIN}")")
+fi
 if [[ -n "${LAUNCHER:-}" ]]; then
   REMOTE_ENV+=("LAUNCHER=$(printf "%q" "${LAUNCHER}")")
 fi
@@ -177,6 +196,16 @@ export WORK_ROOT="$DEST/.ci-work"
 export BENCHMARK_OUTPUT="$DEST/benchmark-output"
 export BENCHMARK_ARTIFACT_ROOT="$DEST/local-artifacts/model-port-benchmarks"
 export AMP_ROOT="$BENCHMARK_ARTIFACT_ROOT"
+_llama_build_key="${TRUSTED_LLAMA_BUILD_KEY:-${LLAMA_CPP_ET_SOURCE_REVISION:-}}"
+if [[ -n "$_llama_build_key" ]]; then
+  if [[ ! "$_llama_build_key" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "error: llama.cpp build key must be a full git commit SHA" >&2
+    exit 2
+  fi
+  export LLAMA_CPP_ET_WORKDIR="$DEST/local-artifacts/frameworks/llama.cpp-et/build-$_llama_build_key"
+  export LLAMA_CPP_ET_SERVER="$LLAMA_CPP_ET_WORKDIR/bin/llama-server"
+  export LLAMA_CPP_ET_PERPLEXITY="$LLAMA_CPP_ET_WORKDIR/bin/llama-perplexity"
+fi
 if [[ -z "${LAUNCHER:-}" ]]; then
   if [[ -x "${ET_INSTALL}/bin/erbium_soc1sim_argbuf_dynmem" ]]; then
     export LAUNCHER="${ET_INSTALL}/bin/erbium_soc1sim_argbuf_dynmem"
