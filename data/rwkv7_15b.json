@@ -2,25 +2,27 @@
   "model": "rwkv7_15b",
   "metric": "tokens_per_second",
   "lower_is_better": false,
-  "updated_at": "2026-05-27T10:10:50.413282+00:00",
+  "updated_at": "2026-07-10T15:29:31.761388+00:00",
   "entries": [
     {
-      "team": "AFOliveira",
+      "team": "Afonso Oliveira",
       "variant": "rwkv7-1.5B-world-q8_0",
       "kernel_wait_s": null,
-      "tokens_per_second": 3.651573824514643,
-      "prompt_tokens_per_second": 20.530359571132866,
+      "kernel_wait_per_image_s": null,
+      "tokens_per_second": 1.563336018362945,
+      "prompt_tokens_per_second": 9.587451942897136,
       "prompt_tokens": 17,
       "completion_tokens": 96,
       "total_tokens": 113,
-      "perplexity": 16.4576,
-      "perplexity_error": 3.00688,
+      "perplexity": 11.7901,
+      "perplexity_error": 2.14387,
       "perplexity_tokens": 512,
-      "perplexity_prompt_tokens_per_second": 82.28,
-      "sha": "1bb9a0c14cd1a9bc794a803f8e1045b3e64adfac",
+      "perplexity_prompt_tokens_per_second": 52.36,
+      "validation_contract_sha256": "145e4c2829cf9a1b020afcff6a7775a5d072cc435a9e2a90903bd6b43b7f10e5",
+      "sha": "44e0041589166d2358f55c7634421179c87d48ed",
       "ref": "refs/heads/main",
-      "run_url": "https://github.com/nekkoai/hf-hackathon/actions/runs/26504752353",
-      "scored_at": "2026-05-27T10:09:56.154384+00:00"
+      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29103369466",
+      "scored_at": "2026-07-10T15:25:47.293786+00:00"
     }
   ]
 }

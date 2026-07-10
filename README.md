@@ -23,14 +23,14 @@ Results are from real ET-SoC1 silicon via the main-branch board workflow. Each m
 | Model | Best participant | Variant | Metric | Score | PPL | Run |
 |-------|------------------|---------|--------|-------|-----|-----|
 | yolo | alien1403 | `yolo_m30` | Mean end-to-end latency | 3.441866s | - | [95385d5](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29099380568) |
-| lfm25 | AFOliveira | `LFM2.5-1.2B-Instruct-Q8_0` | Decode tokens/s | 3.12 | 21.70 (+/- 4.45) | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |
-| llama32_1b | AFOliveira | `Llama-3.2-1B-Instruct-Q8_0` | Decode tokens/s | 13.58 | 15.31 (+/- 2.89) | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |
-| gemma3n_e2b | AFOliveira | `gemma-3n-E2B-it-Q8_0` | Decode tokens/s | 1.50 | 32.83 (+/- 10.20) | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |
-| tinyllama11b | AFOliveira | `TinyLlama-1.1B-Chat-v1.0-Q8_0` | Decode tokens/s | 11.29 | 29.23 (+/- 7.70) | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |
-| rwkv7_15b | AFOliveira | `rwkv7-1.5B-world-q8_0` | Decode tokens/s | 3.65 | 16.46 (+/- 3.01) | [1bb9a0c](https://github.com/nekkoai/hf-hackathon/actions/runs/26504752353) |
+| lfm25 | Afonso Oliveira | `LFM2.5-1.2B-Instruct-Q8_0` | Decode tokens/s | 3.12 | 21.70 (+/- 4.45) | [44e0041](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29103369466) |
+| llama32_1b | Afonso Oliveira | `Llama-3.2-1B-Instruct-Q8_0` | Decode tokens/s | 13.43 | 15.31 (+/- 2.89) | [44e0041](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29103369466) |
+| gemma3n_e2b | Afonso Oliveira | `gemma-3n-E2B-it-Q8_0` | Decode tokens/s | 1.50 | 32.83 (+/- 10.20) | [44e0041](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29103369466) |
+| tinyllama11b | Afonso Oliveira | `TinyLlama-1.1B-Chat-v1.0-Q8_0` | Decode tokens/s | 11.29 | 29.23 (+/- 7.70) | [44e0041](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29103369466) |
+| rwkv7_15b | Afonso Oliveira | `rwkv7-1.5B-world-q8_0` | Decode tokens/s | 1.56 | 11.79 (+/- 2.14) | [44e0041](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29103369466) |
 | qwen25_05b | Razvan-Mihai Hanghicel | `Qwen2.5-0.5B-Instruct-Q8_0` | Decode tokens/s | 11.37 | 16.97 (+/- 3.53) | [d3f9502](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28964644188) |
 | qwen3_8b | Ashish Soni | `Qwen3-8B-Q8_0` | Decode tokens/s | 3.30 | 10.50 (+/- 2.29) | [af95906](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28949135516) |
-| deepseek_r1_15b | alien1403 | `DeepSeek-R1-Distill-Qwen-1.5B-Q8_0` | Decode tokens/s | 7.91 | 47.36 (+/- 12.09) | [7c5d830](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28858491662) |
+| deepseek_r1_15b | Afonso Oliveira | `DeepSeek-R1-Distill-Qwen-1.5B-Q8_0` | Decode tokens/s | 7.92 | 47.36 (+/- 12.09) | [44e0041](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29103369466) |
 
 Full JSON data lives in [`data/`](data/).
 <!-- leaderboard:end -->
