@@ -39,6 +39,11 @@ jobs:
       permission: ${{ steps.auth.outputs.permission }}
       reason: ${{ steps.auth.outputs.reason }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.sha }}
+          fetch-depth: 0
+
       - name: Check actor repository permission
         id: auth
         env:
@@ -80,6 +85,47 @@ jobs:
               echo "ET-SoC1 board run not authorized. ${reason}"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Protect benchmark oracle and runner
+        if: github.event_name == 'pull_request' && steps.auth.outputs.permission != 'admin' && steps.auth.outputs.permission != 'maintain'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          blocked=()
+          while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/*|\
+              .github/ci/reference/yolo.json|\
+              .github/ci/platform/deploy/*|\
+              .github/ci/scripts/benchmark_config_helpers.py|\
+              .github/ci/scripts/build_leaderboard_elf.sh|\
+              .github/ci/scripts/changed_benchmark_models.py|\
+              .github/ci/scripts/leaderboard_gate.py|\
+              .github/ci/scripts/merge_leaderboard.py|\
+              .github/ci/scripts/prepare_benchmark_inputs.sh|\
+              .github/ci/scripts/run_model_benchmark.sh|\
+              .github/ci/scripts/run_yolo_host_reference.sh|\
+              .github/ci/scripts/score_results.py|\
+              scripts/run_sysemu_model_ports.sh|\
+              ported_models/yolo/tools/host_reference.py|\
+              ported_models/yolo/assets/yolo/coco_*_raw_480x640x3_uint8_rgb.bin)
+                blocked+=("$path")
+                ;;
+            esac
+          done < <(git diff --name-only --diff-filter=ACDMRTUXB "$BASE_SHA...$HEAD_SHA")
+          if [[ "${#blocked[@]}" -eq 0 ]]; then
+            exit 0
+          fi
+          {
+            echo "### Protected benchmark files"
+            echo
+            echo "Participant PRs may optimize model implementation files, but may not edit the benchmark oracle or runner:"
+            printf -- '- `%s`\n' "${blocked[@]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf 'error: protected benchmark file changed: %s\n' "${blocked[@]}" >&2
+          exit 1
 
   select-board-models:
     name: Select board models

@@ -97,7 +97,9 @@ models, but they do not need to improve the leaderboard runtime.
 
 For ELF benchmark models, a passing board score also includes the configured
 dump accuracy gate in `.github/ci/benchmark_config.json`. The current gates
-check YOLO against expected detections across a five-image static RGB suite.
+check YOLO against host-generated detections from the pinned reference model on
+five public, hash-pinned COCO images. Correctness is an eligibility gate; only a
+passing result is compared by mean end-to-end latency.
 
 For models that run `llama-perplexity`, the same gate also protects quality:
 the PR score must include PPL, and it must be no more than 20% worse than the

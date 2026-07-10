@@ -18,6 +18,8 @@ step "Python syntax (.github/ci/scripts/*.py)"
 if ! python3 -m py_compile .github/ci/scripts/*.py; then
   bad "python compile errors"
 fi
+python3 -m py_compile ported_models/yolo/tools/host_reference.py \
+  || bad "YOLO host-reference compile errors"
 
 step "Bash syntax (CI shell scripts)"
 while IFS= read -r -d '' sh; do
@@ -33,7 +35,10 @@ step "JSON config validity (benchmark_config + per-model + artifacts)"
 python3 - <<'PY' || fail=1
 import json, sys
 from pathlib import Path
-paths = [Path(".github/ci/benchmark_config.json")]
+paths = [
+    Path(".github/ci/benchmark_config.json"),
+    Path(".github/ci/reference/yolo.json"),
+]
 cfg = json.load(open(paths[0]))
 for m in cfg.get("models", {}).values():
     if "config" in m:
@@ -46,6 +51,33 @@ for p in paths:
     except Exception as exc:
         print(f"FAIL: invalid JSON {p}: {exc}", file=sys.stderr); bad = True
 sys.exit(1 if bad else 0)
+PY
+
+step "YOLO reference contract and public COCO fixtures"
+python3 - <<'PY' || bad "YOLO reference contract does not match benchmark fixtures"
+import hashlib
+import json
+from pathlib import Path
+
+contract = json.loads(Path(".github/ci/reference/yolo.json").read_text())
+config = json.loads(Path(".github/ci/benchmark_config.json").read_text())
+model = config["models"]["yolo"]
+assert model["reference_contract"] == ".github/ci/reference/yolo.json"
+fixtures = {item["name"]: item for item in contract["fixtures"]["cases"]}
+cases = {item["name"]: item for item in model["benchmark_cases"]}
+assert len(fixtures) == len(cases) >= 5
+assert fixtures.keys() == cases.keys()
+for name, fixture in fixtures.items():
+    assert fixture["source_url"].startswith("http://images.cocodataset.org/val2017/")
+    asset = Path(fixture["asset"])
+    assert asset.is_file(), asset
+    assert hashlib.sha256(asset.read_bytes()).hexdigest() == fixture["asset_sha256"]
+    expected_load = str(asset).removeprefix("ported_models/yolo/assets/")
+    loads = cases[name]["file_loads"]
+    assert any(expected_load in load.get("paths", []) for load in loads)
+    accuracy = cases[name]["accuracy"]
+    assert accuracy["kind"] == "yolo_reference_detections"
+    assert accuracy["reference_case"] == name
 PY
 
 step "Config loads/expands for board + sysemu targets"
@@ -64,6 +96,7 @@ python3 .github/ci/scripts/format_pr_comment.py --scores-dir "$tmp" --output "$t
 step "Score results accuracy gates"
 python3 - "$tmp" <<'PY' || bad "score_results.py accuracy gates failed"
 import json
+import hashlib
 import os
 import struct
 import subprocess
@@ -75,6 +108,7 @@ tmp = Path(sys.argv[1])
 assets = tmp / "assets"
 scores = tmp / "scores"
 test_config_path = tmp / "benchmark_config.json"
+yolo_reference_path = tmp / "yolo-host-reference.json"
 SUMMARY = struct.Struct("<16I")
 
 
@@ -123,6 +157,7 @@ def run_score(model: str, run_dir: Path, name: str) -> dict:
     env = os.environ.copy()
     env["BENCHMARK_ARTIFACT_ROOT"] = str(assets)
     env["BENCHMARK_CONFIG"] = str(test_config_path)
+    env["YOLO_HOST_REFERENCE_JSON"] = str(yolo_reference_path)
     subprocess.run(
         [
             sys.executable,
@@ -160,14 +195,48 @@ def yolo_detection_payload(detections):
     return payload
 
 
-def yolo_case_dump(case, *, fail_first=False):
-    detections = []
-    for idx, exp in enumerate(case["accuracy"]["expected"]):
-        score = float(exp.get("min_score", 0.5)) + 0.10
-        class_id = int(exp["class_id"])
-        if fail_first and idx == 0:
-            score = max(0.0, float(exp.get("min_score", 0.5)) - 0.20)
-        detections.append((class_id, score, *[float(v) for v in exp["box"]]))
+contract_path = root / test_config["models"]["yolo"]["reference_contract"]
+contract = json.loads(contract_path.read_text())
+fixture_by_name = {case["name"]: case for case in contract["fixtures"]["cases"]}
+reference_cases = {}
+for idx, case in enumerate(yolo_cases):
+    name = case["name"]
+    reference_cases[name] = {
+        "image_id": fixture_by_name[name]["image_id"],
+        "input_sha256": fixture_by_name[name]["asset_sha256"],
+        "detections": [
+            {
+                "class_id": idx,
+                "label": f"class_{idx}",
+                "score": 0.9,
+                "box": [10.0 + idx, 20.0, 110.0 + idx, 120.0],
+            }
+        ],
+    }
+yolo_reference_path.write_text(
+    json.dumps(
+        {
+            "schema_version": 1,
+            "contract_sha256": hashlib.sha256(contract_path.read_bytes()).hexdigest(),
+            "reference": {
+                "checkpoint_sha256": contract["model"]["source"]["sha256"],
+            },
+            "agreement": contract["agreement"],
+            "cases": reference_cases,
+        }
+    )
+    + "\n"
+)
+
+
+def yolo_case_dump(case, *, fail=False, add_extra=False):
+    expected = reference_cases[case["name"]]["detections"]
+    detections = [] if fail else [
+        (item["class_id"], item["score"], *item["box"])
+        for item in expected
+    ]
+    if add_extra:
+        detections.append((79, 0.9, 200.0, 200.0, 250.0, 250.0))
     return dump_with_summary(
         yolo_det_offset + 4096,
         yolo_fields,
@@ -180,7 +249,7 @@ yolo_det_good_cases = [
     for case in yolo_cases
 ]
 yolo_det_bad_cases = [
-    (case["name"], yolo_case_dump(case, fail_first=(idx == 1)))
+    (case["name"], yolo_case_dump(case, fail=(idx == 1)))
     for idx, case in enumerate(yolo_cases)
 ]
 yolo_det_good_score = run_score(
@@ -193,10 +262,35 @@ yolo_det_bad_score = run_score(
     write_case_results("yolo", "yolo_m30", yolo_det_bad_cases),
     "yolo-bad",
 )
+yolo_det_extra_score = run_score(
+    "yolo",
+    write_case_results(
+        "yolo",
+        "yolo_m30",
+        [
+            (case["name"], yolo_case_dump(case, add_extra=(idx == 2)))
+            for idx, case in enumerate(yolo_cases)
+        ],
+    ),
+    "yolo-extra",
+)
 assert yolo_det_good_score["passed"] and yolo_det_good_score["valid_accuracy"]
 assert not yolo_det_bad_score["passed"] and not yolo_det_bad_score["valid_accuracy"]
-assert "5/5 YOLO image cases valid" in yolo_det_good_score["valid_note"]
+assert not yolo_det_extra_score["passed"] and not yolo_det_extra_score["valid_accuracy"]
+assert yolo_det_good_score["accuracy_precision"] == 1.0
+assert yolo_det_good_score["accuracy_recall"] == 1.0
+assert "5/5 YOLO COCO cases valid" in yolo_det_good_score["valid_note"]
 assert "coco_cat_524280" in yolo_det_bad_score["valid_note"]
+
+test_config["models"]["yolo"]["benchmark_cases"] = []
+test_config_path.write_text(json.dumps(test_config) + "\n")
+yolo_no_cases_score = run_score(
+    "yolo",
+    write_case_results("yolo", "yolo_m30", yolo_det_good_cases),
+    "yolo-no-cases",
+)
+assert not yolo_no_cases_score["passed"]
+assert "fixed COCO reference contract" in yolo_no_cases_score["valid_note"]
 
 PY
 
@@ -249,6 +343,7 @@ if python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "
   bad "leaderboard_gate.py should fail PPL more than 20% worse than best seen"
 fi
 python3 - "$tmp" <<'PY'
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -264,12 +359,58 @@ score = {
     "valid_dump": True,
     "valid_accuracy": True,
     "valid_note": "dump valid; accuracy valid",
+    "validation_contract_sha256": hashlib.sha256(
+        Path(".github/ci/reference/yolo.json").read_bytes()
+    ).hexdigest(),
 }
 (tmp / "score-yolo.json").write_text(json.dumps(score) + "\n")
 PY
 python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-ci-only-pass.md" \
   --target board --models "yolo" --base-ref HEAD >/dev/null \
   || bad "leaderboard_gate.py should allow non-submission CI/scoring-only changes without runtime improvement"
+python3 - "$tmp" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1]) / "score-yolo.json"
+score = json.loads(path.read_text())
+score["validation_contract_sha256"] = "wrong-contract"
+path.write_text(json.dumps(score) + "\n")
+PY
+if python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-contract-fail.md" \
+  --target board --models "yolo" --base-ref HEAD >/dev/null; then
+  bad "leaderboard_gate.py should reject a score from another validation contract"
+fi
+python3 - <<'PY' || bad "leaderboard_gate.py YOLO validation-only classification failed"
+import copy
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+path = Path(".github/ci/scripts/leaderboard_gate.py")
+sys.path.insert(0, str(path.parent))
+spec = importlib.util.spec_from_file_location("leaderboard_gate", path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+
+base = json.loads(Path(".github/ci/benchmark_config.json").read_text())["models"]["yolo"]
+validation_change = copy.deepcopy(base)
+validation_change["benchmark_cases"] = []
+validation_change["validation"]["min_image_count"] = 99
+validation_change["file_loads"][-1]["paths"] = ["yolo/another_coco_input.bin"]
+assert module.strip_validation_only_keys(base, "yolo") == module.strip_validation_only_keys(
+    validation_change, "yolo"
+)
+
+implementation_change = copy.deepcopy(base)
+implementation_change["file_loads"][1]["paths"] = ["yolo/fused_weights.bin"]
+assert module.strip_validation_only_keys(base, "yolo") != module.strip_validation_only_keys(
+    implementation_change, "yolo"
+)
+PY
 rm -rf "$tmp"
 
 step "Leaderboard team resolver"
@@ -329,7 +470,7 @@ python3 .github/ci/scripts/changed_benchmark_models.py --target board \
   --format space --unregistered-out "$(mktemp)" --uncovered-out "$yolo_unvalidated_out" >/dev/null \
   || bad "changed_benchmark_models.py under-validated YOLO case failed"
 if ! grep -qx 'ported_models/yolo/src/yolo_m30_argbuf.c' "$yolo_unvalidated_out"; then
-  bad "changed_benchmark_models.py allowed YOLO source without real-image detection validation"
+  bad "changed_benchmark_models.py allowed YOLO source without COCO host-reference validation"
 fi
 
 yolo_cfg="$(mktemp)"
@@ -339,25 +480,6 @@ from pathlib import Path
 
 out = Path(sys.argv[1])
 cfg = json.loads(Path(".github/ci/benchmark_config.json").read_text())
-cfg["models"]["yolo"]["validation"] = {
-    "kind": "yolo_real_image_detections",
-    "image": "web_car",
-    "source_shape": [480, 640, 3],
-}
-cfg["models"]["yolo"]["accuracy"] = {
-    "kind": "yolo_detections",
-    "offset": "0x01D00000",
-    "max_detections": 64,
-    "expected": [
-        {
-            "class_id": 2,
-            "label": "car",
-            "min_score": 0.55,
-            "box": [4.6, 56.0, 505.5, 273.6],
-            "min_iou": 0.70,
-        }
-    ],
-}
 out.write_text(json.dumps(cfg))
 PY
 yolo_validated_out="$(mktemp)"
@@ -365,9 +487,9 @@ python3 .github/ci/scripts/changed_benchmark_models.py --target board \
   --config "$yolo_cfg" \
   --changed-file ported_models/yolo/src/yolo_m30_argbuf.c \
   --format space --unregistered-out "$(mktemp)" --uncovered-out "$yolo_validated_out" >/dev/null \
-  || bad "changed_benchmark_models.py real-image YOLO validation case failed"
+  || bad "changed_benchmark_models.py COCO host-reference YOLO validation case failed"
 if [[ -s "$yolo_validated_out" ]]; then
-  bad "changed_benchmark_models.py rejected YOLO with real-image detection validation"
+  bad "changed_benchmark_models.py rejected YOLO with COCO host-reference validation"
 fi
 rm -f "$covered_out" "$yolo_unvalidated_cfg" "$yolo_unvalidated_out" "$yolo_cfg" "$yolo_validated_out"
 

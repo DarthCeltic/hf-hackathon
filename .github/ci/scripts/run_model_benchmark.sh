@@ -77,6 +77,14 @@ if [[ "$runner" != "elf" ]]; then
   exit 0
 fi
 
+if [[ "$model" == "yolo" ]]; then
+  export YOLO_HOST_REFERENCE_JSON="${BENCHMARK_OUTPUT}/yolo-host-reference.json"
+  if ! "$(dirname "$0")/run_yolo_host_reference.sh" "$YOLO_HOST_REFERENCE_JSON"; then
+    write_score fail "pinned YOLO host reference failed; board timing is not eligible"
+    exit 0
+  fi
+fi
+
 "$(dirname "$0")/prepare_benchmark_inputs.sh" "$model"
 
 bench_dir="$(python3 -c "import json; print(json.load(open('$BENCHMARK_CONFIG'))['models']['$model']['bench_dir'])")"
