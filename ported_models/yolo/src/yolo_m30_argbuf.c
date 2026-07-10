@@ -433,17 +433,12 @@ int main(uintptr_t arg_area)
             mh_transpose_2d(hid, Q + h * KEY_DIM * HW, QT + h * HW * KEY_DIM, KEY_DIM, HW);
         }
         MH_BARRIER();
+        /* Scale fused directly into this matmul's per-hart output-row pass
+         * (mh_matmul_2d_fp32_scaled) -- no separate scale step, no extra
+         * MH_BARRIER, since each hart scales only the rows it just wrote. */
         for (uint32_t h = 0; h < NHEAD; h++) {
-            mh_matmul_2d_fp32(hid, QT + h * HW * KEY_DIM, K + h * KEY_DIM * HW,
-                              logits + h * HW * HW, HW, KEY_DIM, HW);
-        }
-        MH_BARRIER();
-        if (yolo_is_compute(hid)) {
-            const uint32_t cidx = yolo_compute_idx(hid);
-            uint32_t lo, hi;
-            yolo_range(NHEAD * HW * HW, cidx, &lo, &hi);
-            for (uint32_t i = lo; i < hi; i++) logits[i] *= SCALE;
-            if (hi > lo) evict((const void *)(logits + lo), (hi - lo) * sizeof(float));
+            mh_matmul_2d_fp32_scaled(hid, QT + h * HW * KEY_DIM, K + h * KEY_DIM * HW,
+                                     logits + h * HW * HW, HW, KEY_DIM, HW, SCALE);
         }
         MH_BARRIER();
         mh_softmax_rows(hid, logits, NHEAD * HW, HW);

@@ -1514,8 +1514,14 @@ static inline void mh_transpose_2d(uint32_t hid, const float *in, float *out,
  * accepted for this class of numerical code); requires C zeroed first
  * since accumulation now spans the whole k loop instead of finishing
  * each C[i,j] in one pass. */
-static inline void mh_matmul_2d_fp32(uint32_t hid, const float *A, const float *B, float *C,
-                                     uint32_t M, uint32_t K, uint32_t N) {
+/* scale==1.0f is the plain-matmul case. A non-1.0f scale is fused directly
+ * into the same per-hart output-row pass instead of a separate scale step
+ * -- since each hart already owns [i_lo,i_hi) exclusively here, scaling
+ * those same rows needs no additional MH_BARRIER (the row-range partition
+ * is identical to the matmul's own, so no hart ever reads another hart's
+ * output before it's scaled). */
+static inline void mh_matmul_2d_fp32_scaled(uint32_t hid, const float *A, const float *B, float *C,
+                                            uint32_t M, uint32_t K, uint32_t N, float scale) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t i_lo, i_hi;
@@ -1528,8 +1534,13 @@ static inline void mh_matmul_2d_fp32(uint32_t hid, const float *A, const float *
             const float *b_row = B + k * N;
             for (uint32_t j = 0; j < N; j++) c_row[j] += a_ik * b_row[j];
         }
+        if (scale != 1.0f) for (uint32_t j = 0; j < N; j++) c_row[j] *= scale;
     }
     if (i_hi > i_lo) evict((const void *)(C + i_lo * N), (i_hi - i_lo) * N * sizeof(float));
+}
+static inline void mh_matmul_2d_fp32(uint32_t hid, const float *A, const float *B, float *C,
+                                     uint32_t M, uint32_t K, uint32_t N) {
+    mh_matmul_2d_fp32_scaled(hid, A, B, C, M, K, N, 1.0f);
 }
 
 static inline void mh_softmax_rows(uint32_t hid, float *x, uint32_t M, uint32_t N) {
