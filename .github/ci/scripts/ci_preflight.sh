@@ -30,6 +30,147 @@ step "Workflow YAML parses"
 for yml in .github/workflows/*.yml; do
   python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$yml" || bad "invalid YAML: $yml"
 done
+if ! grep -qF 'uses: aifoundry-org/hf-hackathon/.github/workflows/benchmark-board.yml@main' \
+  .github/workflows/trusted-yolo-pr.yml; then
+  bad "trusted YOLO PR caller is not pinned to the main-owned reusable workflow"
+fi
+if ! grep -qF 'pull_request_target:' .github/workflows/trusted-yolo-pr.yml; then
+  bad "trusted YOLO caller must be loaded from the default branch"
+fi
+if ! grep -qF 'context=trusted-yolo/main-gate' \
+  .github/workflows/trusted-yolo-pr.yml; then
+  bad "trusted YOLO caller does not publish its merge status on the participant commit"
+fi
+if grep -qE '^[[:space:]]+paths:' .github/workflows/trusted-yolo-pr.yml; then
+  bad "trusted YOLO final check must run on every PR so it can be required"
+fi
+if ! grep -qF 'Trusted YOLO leaderboard gate' \
+  .github/workflows/benchmark-board.yml; then
+  bad "trusted YOLO reusable workflow has no stable final check name"
+fi
+
+step "Trusted YOLO tree applies only implementation paths"
+python3 - <<'PY' || bad "trusted YOLO overlay isolation failed"
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path.cwd()
+helper = root / ".github/ci/scripts/prepare_trusted_yolo_tree.py"
+
+
+def run(repo, *args, check=True):
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+    }
+    return subprocess.run(
+        args,
+        cwd=repo,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=check,
+    )
+
+
+def initialize(repo):
+    run(repo.parent, "git", "init", "-q", str(repo))
+    run(repo, "git", "config", "user.name", "CI")
+    run(repo, "git", "config", "user.email", "ci@example.com")
+    (repo / ".gitattributes").write_text("*.bin binary\n")
+    (repo / ".github/ci/reference").mkdir(parents=True)
+    (repo / "ported_models/yolo/src").mkdir(parents=True)
+    (repo / "ported_models/yolo/assets/yolo").mkdir(parents=True)
+    (repo / ".github/ci/reference/yolo.json").write_text('{"trusted": true}\n')
+    (repo / "ported_models/yolo/src/kernel.c").write_text("int kernel(void) { return 1; }\n")
+    (repo / "ported_models/yolo/assets/yolo/weights_region.bin").write_bytes(b"main\0weights")
+    run(repo, "git", "add", ".")
+    run(repo, "git", "commit", "-q", "-m", "main")
+    return run(repo, "git", "rev-parse", "HEAD").stdout.strip()
+
+
+with tempfile.TemporaryDirectory() as td:
+    tmp = Path(td)
+    repo = tmp / "repo"
+    base = initialize(repo)
+    run(repo, "git", "switch", "-q", "-c", "participant")
+    (repo / "ported_models/yolo/src/kernel.c").write_text("int kernel(void) { return 2; }\n")
+    (repo / "ported_models/yolo/src/fused.inc").write_text("static const int fused = 1;\n")
+    (repo / "ported_models/yolo/src/build.sh").write_text("exit 99\n")
+    (repo / "ported_models/yolo/assets/yolo/weights_region.bin").write_bytes(b"fused\0weights")
+    (repo / ".github/ci/reference/yolo.json").write_text('{"trusted": false}\n')
+    run(repo, "git", "add", ".")
+    run(repo, "git", "commit", "-q", "-m", "submission")
+    head = run(repo, "git", "rev-parse", "HEAD").stdout.strip()
+    run(repo, "git", "switch", "-q", "--detach", base)
+    (repo / "ported_models/yolo/src/main_only.h").write_text("#define MAIN_ONLY 1\n")
+    run(repo, "git", "add", ".")
+    run(repo, "git", "commit", "-q", "-m", "main advanced")
+    latest_main = run(repo, "git", "rev-parse", "HEAD").stdout.strip()
+
+    metadata = tmp / "metadata.json"
+    result = run(
+        repo,
+        sys.executable,
+        str(helper),
+        "--repo",
+        str(repo),
+        "--base",
+        latest_main,
+        "--head",
+        head,
+        "--main",
+        latest_main,
+        "--metadata",
+        str(metadata),
+    )
+    payload = json.loads(metadata.read_text())
+    assert payload["applied_paths"] == [
+        "ported_models/yolo/assets/yolo/weights_region.bin",
+        "ported_models/yolo/src/fused.inc",
+        "ported_models/yolo/src/kernel.c",
+    ]
+    assert ".github/ci/reference/yolo.json" in payload["ignored_paths"]
+    assert "ported_models/yolo/src/build.sh" in payload["ignored_paths"]
+    assert payload["participant_merge_base_sha"] == base
+    assert json.loads((repo / ".github/ci/reference/yolo.json").read_text())["trusted"]
+    assert not (repo / "ported_models/yolo/src/build.sh").exists()
+    assert (repo / "ported_models/yolo/src/main_only.h").is_file()
+    assert (repo / "ported_models/yolo/assets/yolo/weights_region.bin").read_bytes() == b"fused\0weights"
+
+with tempfile.TemporaryDirectory() as td:
+    tmp = Path(td)
+    repo = tmp / "repo"
+    base = initialize(repo)
+    run(repo, "git", "switch", "-q", "-c", "participant")
+    os.symlink("/etc/passwd", repo / "ported_models/yolo/src/linked.h")
+    run(repo, "git", "add", ".")
+    run(repo, "git", "commit", "-q", "-m", "symlink")
+    head = run(repo, "git", "rev-parse", "HEAD").stdout.strip()
+    run(repo, "git", "switch", "-q", "--detach", base)
+    result = run(
+        repo,
+        sys.executable,
+        str(helper),
+        "--repo",
+        str(repo),
+        "--base",
+        base,
+        "--head",
+        head,
+        "--main",
+        base,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "regular non-executable" in result.stderr
+PY
 
 step "JSON config validity (benchmark_config + per-model + artifacts)"
 python3 - <<'PY' || fail=1
@@ -368,6 +509,11 @@ PY
 python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-ci-only-pass.md" \
   --target board --models "yolo" --base-ref HEAD >/dev/null \
   || bad "leaderboard_gate.py should allow non-submission CI/scoring-only changes without runtime improvement"
+if python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-forced-submission-fail.md" \
+  --target board --models "yolo" --base-ref HEAD --require-baseline \
+  --force-submission-models yolo >/dev/null; then
+  bad "leaderboard_gate.py should require a trusted YOLO submission to improve runtime"
+fi
 python3 - "$tmp" <<'PY'
 import json
 from pathlib import Path

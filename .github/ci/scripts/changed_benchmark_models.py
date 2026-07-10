@@ -73,7 +73,11 @@ YOLO_REAL_IMAGE_DETECTIONS_VALIDATION = "yolo_real_image_detections"
 YOLO_REFERENCE_DETECTIONS_ACCURACY = "yolo_reference_detections"
 YOLO_REFERENCE_INFRA_PATHS = {
     ".github/ci/reference/yolo.json",
+    ".github/ci/scripts/prepare_trusted_yolo_tree.py",
+    ".github/ci/scripts/refresh_trusted_yolo_prs.sh",
     ".github/ci/scripts/run_yolo_host_reference.sh",
+    ".github/ci/scripts/trusted_yolo_input_hash.sh",
+    ".github/workflows/trusted-yolo-pr.yml",
 }
 ZERO_BLOB_PRIMARY = "zero2m.bin"
 

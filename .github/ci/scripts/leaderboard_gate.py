@@ -382,6 +382,16 @@ def main() -> int:
         default=float(os.environ.get("LEADERBOARD_MAX_PPL_REGRESSION", "0.20")),
         help="Allow at most this fractional PPL regression from the best seen PPL for perplexity-gated models.",
     )
+    parser.add_argument(
+        "--require-baseline",
+        action="store_true",
+        help="Fail selected models that have no compatible base-branch leaderboard entry.",
+    )
+    parser.add_argument(
+        "--force-submission-models",
+        default="",
+        help="Treat these models as participant submissions even when the trusted tree contains no source diff.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(CONFIG_PATH)
@@ -415,6 +425,9 @@ def main() -> int:
         model: model_submission_changed(cfg, model, files, args.base_ref)
         for model in models
     }
+    for model in split_items(args.force_submission_models):
+        if model in submission_changed:
+            submission_changed[model] = True
 
     for port in unregistered:
         failed = True
@@ -512,9 +525,15 @@ def main() -> int:
                 ppl_note = f" PPL {float(ppl_value):.2f} recorded for new baseline."
 
         if baseline_value is None:
-            lines.append(
-                f"| {model} | {cell(label)} | {score_text} | none | pass | First valid leaderboard score for this model.{ppl_note} |"
-            )
+            if args.require_baseline:
+                failed = True
+                lines.append(
+                    f"| {model} | {cell(label)} | {score_text} | none | fail | Main has no compatible validated baseline; wait for the main-branch board update and re-run this gate. |"
+                )
+            else:
+                lines.append(
+                    f"| {model} | {cell(label)} | {score_text} | none | pass | First valid leaderboard score for this model.{ppl_note} |"
+                )
             continue
 
         if not submission_changed.get(model, True):

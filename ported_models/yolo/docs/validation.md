@@ -52,6 +52,23 @@ contract. The leaderboard compares runtimes only within the same contract, so a
 fixture or threshold change cannot be judged against an incompatible baseline.
 
 Normal YOLO optimization PRs may change the implementation source, packed
-weights, offsets, and implementation file loads. The host oracle, scorer,
-runner, contract, and five COCO fixtures are CI-owned and protected from
-participant changes.
+weights, and source-owned offsets. The host oracle, scorer, runner, load map,
+contract, and five COCO fixtures are CI-owned and protected from participant
+changes.
+
+The trusted PR gate constructs its candidate from current `main`, then applies
+only regular C/C++/assembly/include files under `ported_models/yolo/src/` and
+the exact packed `ported_models/yolo/assets/yolo/weights_region.bin` artifact.
+Everything used to decide correctness and leaderboard eligibility comes from
+main. Changes elsewhere in the participant branch can still run in branch CI,
+but they cannot alter the trusted YOLO result.
+
+The trusted result records the participant SHA, main harness SHA, synthetic
+candidate SHA, and validation-contract hash. It fails if the compatible
+main-branch leaderboard baseline is missing or if any trusted YOLO input changes
+during the board run. Unrelated main changes do not make a result stale. A full
+GitHub job re-run evaluates the same participant patch against the new main
+harness without requiring a rebase unless the patch no longer applies. Main
+pushes that change trusted YOLO inputs automatically re-run the latest trusted
+Actions attempt for each open YOLO PR. The main-owned caller writes the pending
+and final `trusted-yolo/main-gate` status directly on the participant head SHA.
