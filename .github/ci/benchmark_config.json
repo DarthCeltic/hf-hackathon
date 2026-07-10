@@ -36,6 +36,15 @@
     }
   },
   "models": {
+    "gemma_3_270m_it_gguf": {
+      "config": "ported_models/llama_cpp_et/benchmarks/gemma_3_270m_it_gguf.json"
+    },
+    "stories15m_moe": {
+      "config": "ported_models/llama_cpp_et/benchmarks/stories15m_moe.json"
+    },
+    "qwen25_coder_15b_instruct_gguf": {
+      "config": "ported_models/llama_cpp_et/benchmarks/qwen25_coder_15b_instruct_gguf.json"
+    },
     "gemma_2_2b_it_gguf": {
       "config": "ported_models/llama_cpp_et/benchmarks/gemma_2_2b_it_gguf.json"
     },

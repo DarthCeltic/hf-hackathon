@@ -136,6 +136,11 @@ def main():
     parser.add_argument("--tags", nargs='+', default=["gguf", "q8_0"], help="Tags to filter models")
     parser.add_argument("--max-size", type=int, default=3000000000, help="Max model size in bytes (3GB)")
     parser.add_argument("--limit", type=int, default=10, help="Number of models to process")
+    parser.add_argument("--fetch-limit", type=int, default=100,
+                         help="How many HF models (by download count) to actually consider. "
+                              "--limit only caps how many PASS all gates; it never widens the "
+                              "search window -- a prior run with --limit 15 still only scanned "
+                              "the fixed top-100-by-downloads and found just 2 candidates.")
     parser.add_argument("--artifacts", type=str, default="ported_models/llama_cpp_et/artifacts.json", help="Path to artifacts.json")
     parser.add_argument("--benchmarks", type=str, default="ported_models/llama_cpp_et/benchmarks", help="Path to benchmarks dir")
     parser.add_argument("--benchmark-config", type=str, default=".github/ci/benchmark_config.json",
@@ -149,7 +154,7 @@ def main():
     trusted = TRUSTED_PUBLISHERS | set(args.allow_publisher)
 
     api = HfApi()
-    models = api.list_models(filter="gguf", sort="downloads", limit=100)
+    models = api.list_models(filter="gguf", sort="downloads", limit=args.fetch_limit)
 
     with open(args.artifacts, "r") as f:
         artifacts_data = json.load(f)

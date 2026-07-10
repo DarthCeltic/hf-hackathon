@@ -432,6 +432,60 @@
       "size": 1894532128,
       "local_cache": "local-artifacts/models/qwen2.5-1.5b-instruct-q8_0.gguf",
       "board_path": "/data/models/qwen2.5-1.5b-instruct-q8_0.gguf"
+    },
+    "gemma_3_270m_it_gguf_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "gemma-3-270m-it-GGUF-Q8_0",
+      "filename": "gemma-3-270m-it-Q8_0.gguf",
+      "env": "GEMMA_3_270M_IT_GGUF_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "unsloth/gemma-3-270m-it-GGUF",
+        "revision": "main",
+        "filename": "gemma-3-270m-it-Q8_0.gguf",
+        "url": "https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q8_0.gguf"
+      },
+      "sha256": "d156a5159f2f79c1b1d53c7c1cc20f1ff28ab8d00f17a292620aad13399b9698",
+      "size": 291546144,
+      "local_cache": "local-artifacts/models/gemma-3-270m-it-Q8_0.gguf",
+      "board_path": "/data/models/gemma-3-270m-it-Q8_0.gguf"
+    },
+    "stories15m_moe_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "stories15M_MOE-Q8_0",
+      "filename": "stories15M_MOE-Q8_0.gguf",
+      "env": "STORIES15M_MOE_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "ggml-org/stories15M_MOE",
+        "revision": "main",
+        "filename": "stories15M_MOE-Q8_0.gguf",
+        "url": "https://huggingface.co/ggml-org/stories15M_MOE/resolve/main/stories15M_MOE-Q8_0.gguf"
+      },
+      "sha256": "c7aa6863f9a4b3cdf19716e2c95622dcbd3bd06989324bf1ac8e60486ef8e881",
+      "size": 39390272,
+      "local_cache": "local-artifacts/models/stories15M_MOE-Q8_0.gguf",
+      "board_path": "/data/models/stories15M_MOE-Q8_0.gguf"
+    },
+    "qwen25_coder_15b_instruct_gguf_q8_0_gguf": {
+      "kind": "model",
+      "framework": "llama.cpp-et",
+      "variant": "Qwen2.5-Coder-1.5B-Instruct-GGUF-Q8_0",
+      "filename": "qwen2.5-coder-1.5b-instruct-q8_0.gguf",
+      "env": "QWEN25_CODER_15B_INSTRUCT_GGUF_Q8_0_GGUF_PATH",
+      "source": {
+        "type": "huggingface",
+        "repo": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+        "revision": "main",
+        "filename": "qwen2.5-coder-1.5b-instruct-q8_0.gguf",
+        "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q8_0.gguf"
+      },
+      "sha256": "507de59046601282ba768a9789900e6ccf60ed93ddf346730b7c68eb0715bc47",
+      "size": 1894532160,
+      "local_cache": "local-artifacts/models/qwen2.5-coder-1.5b-instruct-q8_0.gguf",
+      "board_path": "/data/models/qwen2.5-coder-1.5b-instruct-q8_0.gguf"
     }
   }
 }
