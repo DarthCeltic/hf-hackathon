@@ -53,6 +53,46 @@ if ! grep -qF 'Trusted YOLO leaderboard gate' \
   .github/workflows/benchmark-board.yml; then
   bad "trusted YOLO reusable workflow has no stable final check name"
 fi
+if grep -qF "github.event_name == 'pull_request' || inputs.trusted_yolo" \
+  .github/workflows/benchmark-board.yml; then
+  bad "trusted YOLO board failures must not be marked continue-on-error"
+fi
+for token in BENCHMARK_SHA BENCHMARK_REF BENCHMARK_RUN_URL; do
+  if ! grep -qF "$token" .github/workflows/benchmark-board.yml \
+    || ! grep -qF "$token" .github/ci/platform/deploy/soc3-benchmark.sh; then
+    bad "trusted board score provenance is missing $token"
+  fi
+done
+
+step "Failed prebuild cannot reuse a stale board score"
+stale_tmp="$(mktemp -d)"
+mkdir -p \
+  "$stale_tmp/board/benchmark-output" \
+  "$stale_tmp/et/bin" \
+  "$stale_tmp/platform/gp-sdk/device/sdk/lib/erbium-soc1sim"
+printf '{"passed": true, "kernel_wait_s": 0.001}\n' \
+  > "$stale_tmp/board/benchmark-output/score-yolo.json"
+cat > "$stale_tmp/et/bin/riscv64-unknown-elf-gcc" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$stale_tmp/et/bin/riscv64-unknown-elf-gcc"
+touch "$stale_tmp/platform/gp-sdk/device/sdk/lib/erbium-soc1sim/erbium.ld"
+if MODELS=yolo \
+  SOC3_LOCAL=1 \
+  SOC3_HOST=local \
+  SOC3_DEST="$stale_tmp/board" \
+  SOC3_BUILD_ET="$stale_tmp/et" \
+  ET_PLATFORM_SRC="$stale_tmp/platform" \
+  BENCHMARK_ARTIFACT_ROOT="$stale_tmp/artifacts" \
+  .github/ci/platform/deploy/soc3-benchmark.sh \
+    >"$stale_tmp/run.log" 2>&1; then
+  bad "forced YOLO prebuild failure unexpectedly succeeded"
+fi
+if [[ -e "$stale_tmp/board/benchmark-output/score-yolo.json" ]]; then
+  bad "failed prebuild left a stale board score available for collection"
+fi
+rm -rf "$stale_tmp"
 
 step "Trusted YOLO tree applies only implementation paths"
 python3 - <<'PY' || bad "trusted YOLO overlay isolation failed"
@@ -555,12 +595,48 @@ score = {
     "validation_contract_sha256": hashlib.sha256(
         Path(".github/ci/reference/yolo.json").read_bytes()
     ).hexdigest(),
+    "sha": "expected-sha",
+    "ref": "refs/pull/123/head",
+    "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/456",
 }
 (tmp / "score-yolo.json").write_text(json.dumps(score) + "\n")
 PY
 python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-ci-only-pass.md" \
   --target board --models "yolo" --base-ref HEAD >/dev/null \
   || bad "leaderboard_gate.py should allow non-submission CI/scoring-only changes without runtime improvement"
+python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-provenance-pass.md" \
+  --target board --models "yolo" --base-ref HEAD \
+  --expected-sha expected-sha \
+  --expected-ref refs/pull/123/head \
+  --expected-run-url https://github.com/aifoundry-org/hf-hackathon/actions/runs/456 >/dev/null \
+  || bad "leaderboard_gate.py should accept matching score provenance"
+python3 - "$tmp" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1]) / "score-yolo.json"
+score = json.loads(path.read_text())
+score["run_url"] = "https://github.com/aifoundry-org/hf-hackathon/actions/runs/stale"
+path.write_text(json.dumps(score) + "\n")
+PY
+if python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-provenance-fail.md" \
+  --target board --models "yolo" --base-ref HEAD \
+  --expected-sha expected-sha \
+  --expected-ref refs/pull/123/head \
+  --expected-run-url https://github.com/aifoundry-org/hf-hackathon/actions/runs/456 >/dev/null; then
+  bad "leaderboard_gate.py should reject a stale score from another run"
+fi
+python3 - "$tmp" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1]) / "score-yolo.json"
+score = json.loads(path.read_text())
+score["run_url"] = "https://github.com/aifoundry-org/hf-hackathon/actions/runs/456"
+path.write_text(json.dumps(score) + "\n")
+PY
 if python3 .github/ci/scripts/leaderboard_gate.py --scores-dir "$tmp" --output "$tmp/gate-forced-submission-fail.md" \
   --target board --models "yolo" --base-ref HEAD --require-baseline \
   --force-submission-models yolo >/dev/null; then

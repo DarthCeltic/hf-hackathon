@@ -385,6 +385,9 @@ def main() -> int:
     parser.add_argument("--target", choices=("all", "sysemu", "board"), default="board")
     parser.add_argument("--base-ref", default="")
     parser.add_argument("--output", default="")
+    parser.add_argument("--expected-sha", default="")
+    parser.add_argument("--expected-ref", default="")
+    parser.add_argument("--expected-run-url", default="")
     parser.add_argument(
         "--min-relative-improvement",
         type=float,
@@ -496,6 +499,24 @@ def main() -> int:
             failed = True
             lines.append(
                 f"| {model} | {cell(label)} | - | {baseline_text} | fail | Invalid score JSON: {cell(exc)}. |"
+            )
+            continue
+
+        provenance = {
+            "sha": args.expected_sha,
+            "ref": args.expected_ref,
+            "run_url": args.expected_run_url,
+        }
+        mismatches = [
+            key
+            for key, expected in provenance.items()
+            if expected and score.get(key) != expected
+        ]
+        if mismatches:
+            failed = True
+            lines.append(
+                f"| {model} | {cell(label)} | - | {baseline_text} | fail | "
+                f"Score provenance does not match this workflow run: {cell(', '.join(mismatches))}. |"
             )
             continue
 

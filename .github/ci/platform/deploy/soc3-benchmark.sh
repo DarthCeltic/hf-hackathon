@@ -28,6 +28,22 @@ source "$(dirname "$0")/soc3-ssh.sh"
 SOC3_HOST="${SOC3_HOST:-root@board-host}"
 export SOC3_HOST
 
+TRANSPORT="$(soc3_resolve_transport)"
+SSH_CMD=()
+if [[ "$TRANSPORT" != "local" ]]; then
+  read -r -a SSH_CMD <<<"$(soc3_ssh_cmd)"
+fi
+
+# A failed local prebuild must not leave an older run's score eligible for
+# collection. Clear the board-host output before any operation that can fail.
+if [[ "$TRANSPORT" == "local" ]]; then
+  rm -rf "${DEST}/benchmark-output"
+  mkdir -p "${DEST}/benchmark-output"
+else
+  output_dir="$(printf "%q" "${DEST}/benchmark-output")"
+  "${SSH_CMD[@]}" "rm -rf ${output_dir} && mkdir -p ${output_dir}"
+fi
+
 if [[ -x "${SOC3_BUILD_ET:-$HOME/et}/bin/riscv64-unknown-elf-gcc" ]]; then
   echo "==> Pre-building ELFs locally (${SOC3_BUILD_ET:-$HOME/et})"
   mkdir -p "${BENCHMARK_ARTIFACT_ROOT}"
@@ -51,12 +67,7 @@ PY
   export SOC3_PREBUILT=1
 fi
 
-TRANSPORT="$(soc3_resolve_transport)"
 echo "==> soc3 transport: ${TRANSPORT} (set USE_TAILSCALE_SSH=0 to force OpenSSH)"
-SSH_CMD=()
-if [[ "$TRANSPORT" != "local" ]]; then
-  read -r -a SSH_CMD <<<"$(soc3_ssh_cmd)"
-fi
 
 RSYNC_HOST="${SOC3_HOST}"
 if [[ "$TRANSPORT" == "local" ]]; then
@@ -115,6 +126,11 @@ fi
 if [[ -n "${GITHUB_RUN_ID:-}" ]]; then
   REMOTE_ENV+=("GITHUB_RUN_ID=$(printf "%q" "${GITHUB_RUN_ID}")")
 fi
+for name in BENCHMARK_SHA BENCHMARK_REF BENCHMARK_RUN_URL; do
+  if [[ -n "${!name:-}" ]]; then
+    REMOTE_ENV+=("${name}=$(printf "%q" "${!name}")")
+  fi
+done
 if [[ -n "${SOC3_PREBUILT:-}" ]]; then
   REMOTE_ENV+=("SOC3_PREBUILT=$(printf "%q" "${SOC3_PREBUILT}")")
 fi
