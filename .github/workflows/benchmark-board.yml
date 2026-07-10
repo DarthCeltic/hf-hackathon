@@ -312,6 +312,8 @@ jobs:
     outputs:
       trusted_main_sha: ${{ steps.trusted-candidate.outputs.main_sha }}
       trusted_input_sha: ${{ steps.trusted-candidate.outputs.input_sha }}
+      benchmark_sha: ${{ steps.bench.outputs.sha }}
+      benchmark_ref: ${{ steps.bench.outputs.ref }}
     env:
       HOME: /root
       MODELS: ${{ needs.select-board-models.outputs.models }}
@@ -549,11 +551,11 @@ jobs:
         # the PR comment and scores, so a model that does not build yet must not
         # red-X the PR. Pushes to main stay strict (the leaderboard update depends
         # on a clean board run).
-        continue-on-error: ${{ github.event_name == 'pull_request' || inputs.trusted_yolo }}
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         env:
-          GITHUB_SHA: ${{ inputs.trusted_yolo && github.event.pull_request.head.sha || github.sha }}
-          GITHUB_REF: ${{ inputs.trusted_yolo && format('refs/pull/{0}/head', github.event.pull_request.number) || github.ref }}
-          GITHUB_ACTOR: ${{ inputs.trusted_yolo && github.event.pull_request.user.login || github.actor }}
+          BENCHMARK_SHA: ${{ steps.bench.outputs.sha }}
+          BENCHMARK_REF: ${{ steps.bench.outputs.ref }}
+          BENCHMARK_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           .github/ci/platform/deploy/soc3-benchmark.sh
 
@@ -561,6 +563,7 @@ jobs:
         if: always() && steps.board-access.outputs.run_board == '1'
         run: |
           source .github/ci/platform/deploy/soc3-ssh.sh
+          rm -rf board-output board-scores
           mkdir -p board-output board-scores
           if soc3_is_local; then
             cp -a /root/et-jobs-deploy/benchmark-output/. board-output/ 2>/dev/null || true
@@ -761,6 +764,9 @@ jobs:
           UNCOVERED: ${{ needs.select-board-models.outputs.uncovered }}
           PR_BASE_SHA: ${{ inputs.trusted_yolo && needs.board-benchmark.outputs.trusted_main_sha || github.event.pull_request.base.sha }}
           TRUSTED_YOLO_MODE: ${{ inputs.trusted_yolo && '1' || '0' }}
+          BENCHMARK_SHA: ${{ needs.board-benchmark.outputs.benchmark_sha }}
+          BENCHMARK_REF: ${{ needs.board-benchmark.outputs.benchmark_ref }}
+          BENCHMARK_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEADERBOARD_MIN_RELATIVE_IMPROVEMENT: ${{ vars.LEADERBOARD_MIN_RELATIVE_IMPROVEMENT || '0' }}
         run: |
           set -euo pipefail
@@ -773,6 +779,17 @@ jobs:
             exit 1
           fi
           extra_args=()
+          if [[ "$HAS_MODELS" == "1" ]]; then
+            if [[ -z "$BENCHMARK_SHA" || -z "$BENCHMARK_REF" ]]; then
+              echo "Board job did not report score provenance." >&2
+              exit 1
+            fi
+            extra_args+=(
+              --expected-sha "$BENCHMARK_SHA"
+              --expected-ref "$BENCHMARK_REF"
+              --expected-run-url "$BENCHMARK_RUN_URL"
+            )
+          fi
           if [[ "$TRUSTED_YOLO_MODE" == "1" && "$HAS_MODELS" == "1" ]]; then
             extra_args+=(--require-baseline --force-submission-models yolo)
           fi

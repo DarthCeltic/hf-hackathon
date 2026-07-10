@@ -301,6 +301,8 @@ def sha256_file(path: Path) -> str:
 
 
 def run_url() -> str:
+    if os.environ.get("BENCHMARK_RUN_URL"):
+        return os.environ["BENCHMARK_RUN_URL"]
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
     repo = os.environ.get("GITHUB_REPOSITORY", "local")
     run_id = os.environ.get("GITHUB_RUN_ID", "0")
@@ -328,8 +330,8 @@ def score_common(model: str, variant: str, note: str = "") -> dict[str, Any]:
         "emu_cycle_last": None,
         "elapsed_s": None,
         "note": note,
-        "sha": os.environ.get("GITHUB_SHA", "local"),
-        "ref": os.environ.get("GITHUB_REF", "local"),
+        "sha": os.environ.get("BENCHMARK_SHA") or os.environ.get("GITHUB_SHA", "local"),
+        "ref": os.environ.get("BENCHMARK_REF") or os.environ.get("GITHUB_REF", "local"),
         "team": os.environ.get("LEADERBOARD_TEAM") or os.environ.get("GITHUB_ACTOR", "local"),
         "run_url": run_url(),
         "scored_at": datetime.now(timezone.utc).isoformat(),

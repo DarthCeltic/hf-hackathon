@@ -17,6 +17,9 @@ export SYSEMU_TIMEOUT SYSEMU_LAUNCHER_TIMEOUT BENCHMARK_DEVICE
 
 model="${1:?model required}"
 leaderboard_team="${LEADERBOARD_TEAM:-${GITHUB_ACTOR:-local}}"
+benchmark_sha="${BENCHMARK_SHA:-${GITHUB_SHA:-local}}"
+benchmark_ref="${BENCHMARK_REF:-${GITHUB_REF:-local}}"
+benchmark_run_url="${BENCHMARK_RUN_URL:-${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-local}/actions/runs/${GITHUB_RUN_ID:-0}}"
 
 python3 - "$model" "$BENCHMARK_CONFIG" "$REPO_ROOT" <<'PY'
 import sys
@@ -34,14 +37,13 @@ PY
 
 write_score() {
   local status="$1" note="$2"
-  local run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-local}/actions/runs/${GITHUB_RUN_ID:-0}"
   python3 "${REPO_ROOT}/.github/ci/scripts/score_results.py" \
     --model "$model" \
     --output "${BENCHMARK_OUTPUT}/score-${model}.json" \
-    --sha "${GITHUB_SHA:-local}" \
-    --ref "${GITHUB_REF:-local}" \
+    --sha "$benchmark_sha" \
+    --ref "$benchmark_ref" \
     --actor "$leaderboard_team" \
-    --run-url "$run_url" \
+    --run-url "$benchmark_run_url" \
     --status "$status" \
     --note "$note"
 }
@@ -186,14 +188,13 @@ run_dir="${BENCHMARK_OUTPUT}/sysemu-${model}"
 mkdir -p "$run_dir"
 
 score_out="${BENCHMARK_OUTPUT}/score-${model}.json"
-run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-local}/actions/runs/${GITHUB_RUN_ID:-0}"
 score_common=(
   --model "$model"
   --output "$score_out"
-  --sha "${GITHUB_SHA:-local}"
-  --ref "${GITHUB_REF:-local}"
+  --sha "$benchmark_sha"
+  --ref "$benchmark_ref"
   --actor "$leaderboard_team"
-  --run-url "$run_url"
+  --run-url "$benchmark_run_url"
 )
 
 cd "${REPO_ROOT}"
