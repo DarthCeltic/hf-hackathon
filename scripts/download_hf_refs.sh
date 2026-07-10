@@ -26,6 +26,13 @@ download_model() {
 }
 
 download_model \
+  "dncnn" \
+  "deepinv/dncnn" \
+  "3bb1f2a95321781343331069776c3eba98707a56" \
+  "dncnn" \
+  "dncnn_sigma2_gray.pth"
+
+download_model \
   "yolov10n" \
   "onnx-community/yolov10n" \
   "57657320425ee34056408a57ad9d29c4d4815bd8" \
