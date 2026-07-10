@@ -422,40 +422,35 @@ int main(uintptr_t arg_area)
         CONV_DW3x3_S1_P1_VPU(V_resh, pe, WP(WR_model_10_attn_pe_conv_Conv_W), WP(WR_model_10_attn_pe_conv_Conv_B), 128u, 9u, 16u, 0u);
 
         /* Attention scoring + softmax + value matmul + pe-add.
-         * HW=144=9*16 so every row-range boundary from yolo_range() lands
-         * on a whole multiple of 16 floats for every shape used here
-         * (KEY_DIM=32, HEAD_DIM=64, HW=144 rows) -- the same cache-line-safe
-         * row-granularity argument as mh_upsample, never the flat-element
-         * split that caused the DFL decode race. */
-        for (uint32_t h = 0; h < NHEAD; h++) {
-            mh_transpose_2d(hid, Q + h * KEY_DIM * HW, QT + h * HW * KEY_DIM, KEY_DIM, HW);
+         * BISECTION (2026-07-10): reverted to single-hart. The multi-hart
+         * version of this block (6 sequential MH_BARRIER-separated stages
+         * over small data, HW=144/NHEAD=2) is the current #1 suspect for
+         * why the combined kernel regressed vs register-unbind alone
+         * (2.93s vs 2.86s) despite every individual piece being sound.
+         * Reverting ONLY this block to isolate it -- see corpus
+         * yolo_PR77_REGRESSED_root_cause_2026_07_10 for the full picture. */
+        if (is_h0) {
+            for (uint32_t h = 0; h < NHEAD; h++) {
+                transpose_2d(Q + h * KEY_DIM * HW, QT + h * HW * KEY_DIM, KEY_DIM, HW);
+            }
+            for (uint32_t h = 0; h < NHEAD; h++) {
+                matmul_2d_fp32(QT + h * HW * KEY_DIM, K + h * KEY_DIM * HW,
+                               logits + h * HW * HW, HW, KEY_DIM, HW);
+            }
+            for (uint32_t i = 0; i < NHEAD * HW * HW; i++) logits[i] *= SCALE;
+            softmax_rows(logits, NHEAD * HW, HW);
+            for (uint32_t h = 0; h < NHEAD; h++) {
+                transpose_2d(logits + h * HW * HW, sm_T + h * HW * HW, HW, HW);
+            }
+            for (uint32_t h = 0; h < NHEAD; h++) {
+                matmul_2d_fp32(V + h * HEAD_DIM * HW, sm_T + h * HW * HW,
+                               attn_o + h * HEAD_DIM * HW, HEAD_DIM, HW, HW);
+            }
+            for (uint32_t i = 0; i < 128u * HW; i++) attn_o[i] += pe[i];
+            evict((const void *)attn_o, 128u * HW * sizeof(float));
+            WAIT_CACHEOPS; FENCE;
         }
         MH_BARRIER();
-        for (uint32_t h = 0; h < NHEAD; h++) {
-            mh_matmul_2d_fp32(hid, QT + h * HW * KEY_DIM, K + h * KEY_DIM * HW,
-                              logits + h * HW * HW, HW, KEY_DIM, HW);
-        }
-        MH_BARRIER();
-        if (yolo_is_compute(hid)) {
-            const uint32_t cidx = yolo_compute_idx(hid);
-            uint32_t lo, hi;
-            yolo_range(NHEAD * HW * HW, cidx, &lo, &hi);
-            for (uint32_t i = lo; i < hi; i++) logits[i] *= SCALE;
-            if (hi > lo) evict((const void *)(logits + lo), (hi - lo) * sizeof(float));
-        }
-        MH_BARRIER();
-        mh_softmax_rows(hid, logits, NHEAD * HW, HW);
-        MH_BARRIER();
-        for (uint32_t h = 0; h < NHEAD; h++) {
-            mh_transpose_2d(hid, logits + h * HW * HW, sm_T + h * HW * HW, HW, HW);
-        }
-        MH_BARRIER();
-        for (uint32_t h = 0; h < NHEAD; h++) {
-            mh_matmul_2d_fp32(hid, V + h * HEAD_DIM * HW, sm_T + h * HW * HW,
-                              attn_o + h * HEAD_DIM * HW, HEAD_DIM, HW, HW);
-        }
-        MH_BARRIER();
-        MH_IADD(attn_o, pe, 128u * HW);
 
         /* proj: 128 -> 128, 1x1 (no activation). */
         CONV_1x1(attn_o, proj_o, WP(WR_model_10_attn_proj_conv_Conv_W), WP(WR_model_10_attn_proj_conv_Conv_B), 128u, 9u, 16u, 128u, 0u);
