@@ -451,24 +451,6 @@
       "local_cache": "local-artifacts/models/gemma-3-270m-it-Q8_0.gguf",
       "board_path": "/data/models/gemma-3-270m-it-Q8_0.gguf"
     },
-    "stories15m_moe_q8_0_gguf": {
-      "kind": "model",
-      "framework": "llama.cpp-et",
-      "variant": "stories15M_MOE-Q8_0",
-      "filename": "stories15M_MOE-Q8_0.gguf",
-      "env": "STORIES15M_MOE_Q8_0_GGUF_PATH",
-      "source": {
-        "type": "huggingface",
-        "repo": "ggml-org/stories15M_MOE",
-        "revision": "main",
-        "filename": "stories15M_MOE-Q8_0.gguf",
-        "url": "https://huggingface.co/ggml-org/stories15M_MOE/resolve/main/stories15M_MOE-Q8_0.gguf"
-      },
-      "sha256": "c7aa6863f9a4b3cdf19716e2c95622dcbd3bd06989324bf1ac8e60486ef8e881",
-      "size": 39390272,
-      "local_cache": "local-artifacts/models/stories15M_MOE-Q8_0.gguf",
-      "board_path": "/data/models/stories15M_MOE-Q8_0.gguf"
-    },
     "qwen25_coder_15b_instruct_gguf_q8_0_gguf": {
       "kind": "model",
       "framework": "llama.cpp-et",

@@ -83,6 +83,15 @@ ACCEPTED_PIPELINE_TAGS = {"text-generation", "text2text-generation"}
 # download/load path cannot reconstruct a checkpoint from one shard.
 SHARDED_GGUF_PATTERN = re.compile(r"-\d{5}-of-\d{5}\.gguf$", re.I)
 
+# Gate 6: found live 2026-07-10 -- stories15M_MOE (ggml-org, otherwise a
+# fully trusted publisher) ran fine (21.8 tok/s) but produced PPL 8685.82,
+# nowhere near the leaderboard gate's [1, 1000] sanity range -- essentially
+# incoherent output. The MoE (mixture-of-experts) routing this runner uses
+# is the most likely cause; a 15M-param toy model isn't worth chasing that
+# compatibility gap for. Skip anything MoE-flavored by name rather than
+# silently register another one that technically runs but is broken.
+MOE_NAME_PATTERN = re.compile(r"\bmoe\b|mixture.of.experts", re.I)
+
 
 def base_model_identity(repo_id: str, filename: str) -> str:
     """Normalize a repo+filename to a coarse base-model identity for dedup,
@@ -168,7 +177,7 @@ def main():
             existing_identities.add(base_model_identity(src["repo"], entry.get("filename", "")))
 
     count = 0
-    skipped = {"publisher": 0, "junk_repo": 0, "task_type": 0, "duplicate": 0, "size": 0, "error": 0, "sharded": 0}
+    skipped = {"publisher": 0, "junk_repo": 0, "task_type": 0, "duplicate": 0, "size": 0, "error": 0, "sharded": 0, "moe": 0}
     for m in models:
         if count >= args.limit:
             break
@@ -179,6 +188,11 @@ def main():
         if is_junk_repo(repo_id):
             print(f"  SKIP (junk-repo pattern): {repo_id}")
             skipped["junk_repo"] += 1
+            continue
+
+        if MOE_NAME_PATTERN.search(repo_id):
+            print(f"  SKIP (MoE architecture, confirmed broken PPL on this runner): {repo_id}")
+            skipped["moe"] += 1
             continue
 
         if publisher not in trusted:
