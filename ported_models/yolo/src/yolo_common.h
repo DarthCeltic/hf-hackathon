@@ -6,6 +6,7 @@
  */
 #ifndef YOLO_COMMON_H
 #define YOLO_COMMON_H
+/* noise-floor check: zero-semantic comment touch, forces board re-run */
 
 #include <stdint.h>
 #include "erbium/isa/atomic.h"
