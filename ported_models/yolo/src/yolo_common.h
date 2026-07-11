@@ -491,8 +491,8 @@ static void conv2d_1x1_fp32_mh_vpu_oc8(uint32_t hid,
 
                 for (uint32_t ic = 0; ic < IC; ic++) {
                     float v_pkg;
-                    register float w0 asm("f20"), w1 asm("f21"), w2 asm("f22"), w3 asm("f23");
-                    register float w4 asm("f24"), w5 asm("f25"), w6 asm("f26"), w7 asm("f27");
+                    float w0, w1, w2, w3;
+                    float w4, w5, w6, w7;
                     const float *src = in + (ic * H + oh) * W_ + ow8;
                     
                     union { float f; uint32_t u; } w0_u; w0_u.f = W[(oc0 + 0) * IC + ic];
@@ -589,8 +589,8 @@ static void conv2d_1x1_fp32_mh_vpu_oc16(uint32_t hid,
 
                 for (uint32_t ic = 0; ic < IC; ic++) {
                     float v_pkg;
-                    register float w0 asm("f20"), w1 asm("f21"), w2 asm("f22"), w3 asm("f23");
-                    register float w4 asm("f24"), w5 asm("f25"), w6 asm("f26"), w7 asm("f27");
+                    float w0, w1, w2, w3;
+                    float w4, w5, w6, w7;
                     const float *src = in + (ic * H + oh) * W_ + ow8;
                     
                     __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v_pkg) : "r"(src));
@@ -835,8 +835,8 @@ static void conv2d_3x3_p1_fp32_mh_vpu_oc8(uint32_t hid,
                             float w_pkg;
                             if (iw >= 0 && iw + 7 < (int32_t)W_) {
                                 const float *src = in + (ic * H + (uint32_t)ih) * W_ + (uint32_t)iw;
-                                register float w0 asm("f20"), w1 asm("f21"), w2 asm("f22"), w3 asm("f23");
-                                register float w4 asm("f24"), w5 asm("f25"), w6 asm("f26"), w7 asm("f27");
+                                float w0, w1, w2, w3;
+                                float w4, w5, w6, w7;
                                 
                                 union { float f; uint32_t u; } w0_u; w0_u.f = W[((oc0 + 0) * IC + ic) * 9u + ky * 3u + kx];
                                 union { float f; uint32_t u; } w1_u; w1_u.f = W[((oc0 + 1) * IC + ic) * 9u + ky * 3u + kx];
