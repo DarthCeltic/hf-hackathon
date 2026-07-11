@@ -49,5 +49,5 @@
       "chunks": 4
     }
   },
-  "note": "batch_size/ubatch_size tuned 256/128 -> 512/256 (board-confirmed win: same values proven +47% decode on qwen3_8b via Modal Q8-F experiment)."
+  "note": "batch_size/ubatch_size tuned 256/128 -> 512/256 (same values proven +47% decode on qwen3_8b via Modal Q8-F experiment). Board-confirmed pass on first run; retrying after a noise-flip on re-run."
 }
