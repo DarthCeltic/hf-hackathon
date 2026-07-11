@@ -498,11 +498,15 @@ int main(uintptr_t arg_area)
     /* m.11: nearest-2x upsample of psa_out [256,9,16] -> [256,18,32]. */
     {
         float *up = (float *)(base + SCR_M11_UP);
-        MH_UPSAMPLE2X(psa_out, up, 256u, 9u, 16u);
+        /* BISECTION (2026-07-10): FPN upsample+concat reverted to single-
+         * hart to test whether pure-memory-copy barrier overhead exceeds
+         * the parallel-copy benefit here, unlike the compute-heavy PSA
+         * attention core where multi-hart proved a real net positive. */
+        H0_RUN(upsample_nearest_2x(psa_out,up,256u,9u,16u), up, (256u)*(9u*2u)*(16u*2u)*sizeof(float));
 
         /* m.12: concat [up, c2f_m6] axis=1 -> [384,18,32] */
         float *cat = (float *)(base + SCR_M12_CONCAT);
-        MH_CONCAT2_CHW(up, 256u, c2f_m6, 128u, cat, 18u, 32u);
+        H0_RUN(concat_c_chw(up,256u,c2f_m6,128u,cat,18u,32u), cat, ((256u)+(128u))*(18u)*(32u)*sizeof(float));
 
         /* m.13: C2f without shortcut.
          *   cv1: 384 -> 128, 1x1+SiLU; split -> y0(64)+y1(64)
@@ -534,9 +538,9 @@ int main(uintptr_t arg_area)
     /* m.14: nearest-2x upsample of m13 -> [128,36,64]; m.15: concat with c2f_m4 [64,36,64] = [192,36,64]. */
     {
         float *up = (float *)(base + SCR_M14_UP);
-        MH_UPSAMPLE2X(m13_cv2_out, up, 128u, 18u, 32u);
+        H0_RUN(upsample_nearest_2x(m13_cv2_out,up,128u,18u,32u), up, (128u)*(18u*2u)*(32u*2u)*sizeof(float));
         float *cat = (float *)(base + SCR_M15_CONCAT);
-        MH_CONCAT2_CHW(up, 128u, c2f_m4, 64u, cat, 36u, 64u);
+        H0_RUN(concat_c_chw(up,128u,c2f_m4,64u,cat,36u,64u), cat, ((128u)+(64u))*(36u)*(64u)*sizeof(float));
 
         /* m.16: C2f without shortcut.  cv1: 192 -> 64; split into y0(32)+y1(32);
          * m.0: 32 -> 32, 32 -> 32; concat [y0,y1,m0_cv2] = 96; cv2: 96 -> 64. */
@@ -564,7 +568,7 @@ int main(uintptr_t arg_area)
         CONV_3x3_S2_P1_VPU(p3_out, down, WP(WR_model_17_conv_Conv_W), WP(WR_model_17_conv_Conv_B),
                            64u, 36u, 64u, 64u, 18u, 32u, 1u);
         float *cat = (float *)(base + SCR_M18_CONCAT);
-        MH_CONCAT2_CHW(down, 64u, m13_cv2_out, 128u, cat, 18u, 32u);
+        H0_RUN(concat_c_chw(down,64u,m13_cv2_out,128u,cat,18u,32u), cat, ((64u)+(128u))*(18u)*(32u)*sizeof(float));
 
         /* m.19: C2f w/o shortcut.  cv1 192->128; split 64+64; m.0 64->64, 64->64; concat 192->cv2 128. */
         float *cv1 = (float *)(base + SCR_M19_CV1);
@@ -594,7 +598,7 @@ int main(uintptr_t arg_area)
                        128u, 18u, 32u, 9u, 16u, 3u, 3u, 2u, 2u, 1u, 1u, 0u);
 
         float *cat = (float *)(base + SCR_M21_CONCAT);
-        MH_CONCAT2_CHW(down, 128u, psa_out, 256u, cat, 9u, 16u);
+        H0_RUN(concat_c_chw(down,128u,psa_out,256u,cat,9u,16u), cat, ((128u)+(256u))*(9u)*(16u)*sizeof(float));
 
         /* m.22: C2fCIB block.
          *   cv1 384->256 (1x1+SiLU); split 128+128 (y0, y1)
