@@ -51,6 +51,32 @@ static inline float silu(float x) {
     return x * fast_recip(1.0f + my_expf(-x));
 }
 
+/* Vectorized SiLU: x / (1 + exp(-x)), computed entirely on the VPU register,
+ * never touching memory. The depth-anything store-buffer hazard (see fence
+ * comments below) is specifically about a vector STORE followed by a scalar
+ * READ of the same address; this never does that -- it stays in registers
+ * from accumulator to final single fsq2 store, so the hazard does not apply. */
+static inline float vsilu_ps(float x) {
+    union { float f; uint32_t u; } _z; _z.f = 0.0f;
+    union { float f; uint32_t u; } _o; _o.f = 1.0f;
+    union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f; /* log2(e) */
+    float z, o, l2e, t;
+    __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(z) : "r"((uint64_t)_z.u));
+    __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(o) : "r"((uint64_t)_o.u));
+    __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(l2e) : "r"((uint64_t)_l.u));
+    __asm__ volatile(
+        "fsub.ps %[t], %[z], %[x]\n"
+        "fmul.ps %[t], %[t], %[l2e]\n"
+        "fexp.ps %[t], %[t]\n"
+        "fadd.ps %[t], %[t], %[o]\n"
+        "frcp.ps %[t], %[t]\n"
+        "fmul.ps %[t], %[t], %[x]\n"
+        : [t] "=&f"(t)
+        : [x] "f"(x), [z] "f"(z), [o] "f"(o), [l2e] "f"(l2e)
+    );
+    return t;
+}
+
 static inline uintptr_t buffer_base_from_args(uintptr_t arg_area)
 {
     if (arg_area == 0u || arg_area == ~(uintptr_t)0u)
@@ -430,15 +456,12 @@ static void conv2d_1x1_fp32_mh_vpu(uint32_t hid,
                     __asm__ volatile("fmadd.ps %0, %1, %2, %0\n"
                                      : "+f"(acc) : "f"(v_pkg), "f"(w_pkg));
                 }
-                /* Store 8 lanes; apply scalar SiLU/activation. */
-                __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(acc) : "memory");
-                /* throwaway fsq2 to flush store buffer (depth-anything lesson) */
-                __asm__ volatile("fence rw, rw" ::: "memory");
                 float *dst = out + (oc * H + oh) * W_ + ow8;
                 if (act == 1u) {
-                    for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]);
+                    float _t = vsilu_ps(acc);
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory");
                 } else {
-                    for (int l = 0; l < 8; l++) dst[l] = acc_buf[l];
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(acc) : "memory");
                 }
             }
         }
@@ -527,13 +550,12 @@ static void conv2d_1x1_fp32_mh_vpu_oc8(uint32_t hid,
 
                 /* Store each accumulator with optional SiLU. */
 #define STORE_ACC(REG, OC_OFFSET) do { \
-    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(REG) : "memory"); \
-    __asm__ volatile("fence rw, rw" ::: "memory"); \
     float *dst = out + ((oc0 + OC_OFFSET) * H + oh) * W_ + ow8; \
     if (act == 1u) { \
-        for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]); \
+        float _t = vsilu_ps(REG); \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory"); \
     } else { \
-        for (int l = 0; l < 8; l++) dst[l] = acc_buf[l]; \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(REG) : "memory"); \
     } \
 } while (0)
                 STORE_ACC(a0, 0); STORE_ACC(a1, 1); STORE_ACC(a2, 2); STORE_ACC(a3, 3);
@@ -653,13 +675,12 @@ static void conv2d_1x1_fp32_mh_vpu_oc16(uint32_t hid,
                 }
 
 #define STORE_ACC(REG, OO) do { \
-    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(REG) : "memory"); \
-    __asm__ volatile("fence rw, rw" ::: "memory"); \
     float *dst = out + ((oc0 + OO) * H + oh) * W_ + ow8; \
     if (act == 1u) { \
-        for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]); \
+        float _t = vsilu_ps(REG); \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory"); \
     } else { \
-        for (int l = 0; l < 8; l++) dst[l] = acc_buf[l]; \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(REG) : "memory"); \
     } \
 } while (0)
                 STORE_ACC(a0, 0); STORE_ACC(a1, 1); STORE_ACC(a2, 2); STORE_ACC(a3, 3);
@@ -772,14 +793,15 @@ static void conv2d_3x3_p1_fp32_mh_vpu(uint32_t hid,
                     }
                 }
 
-                /* Store and apply scalar SiLU per lane. */
-                __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(acc) : "memory");
-                __asm__ volatile("fence rw, rw" ::: "memory");
+                /* Store, applying vectorized SiLU on-register (no scratch round-trip
+                 * needed here -- unlike the edge-case fence above, `acc` already
+                 * holds the final accumulated value at this point). */
                 float *dst = out + (oc * H + (uint32_t)oh) * W_ + (uint32_t)ow8;
                 if (act == 1u) {
-                    for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]);
+                    float _t = vsilu_ps(acc);
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory");
                 } else {
-                    for (int l = 0; l < 8; l++) dst[l] = acc_buf[l];
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(acc) : "memory");
                 }
             }
         }
@@ -889,13 +911,12 @@ static void conv2d_3x3_p1_fp32_mh_vpu_oc8(uint32_t hid,
                 }
 
 #define STORE_ACC(REG, OO) do { \
-    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(REG) : "memory"); \
-    __asm__ volatile("fence rw, rw" ::: "memory"); \
     float *dst = out + ((oc0 + OO) * H + (uint32_t)oh) * W_ + (uint32_t)ow8; \
     if (act == 1u) { \
-        for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]); \
+        float _t = vsilu_ps(REG); \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory"); \
     } else { \
-        for (int l = 0; l < 8; l++) dst[l] = acc_buf[l]; \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(REG) : "memory"); \
     } \
 } while (0)
                 STORE_ACC(a0, 0); STORE_ACC(a1, 1); STORE_ACC(a2, 2); STORE_ACC(a3, 3);
@@ -995,17 +1016,18 @@ static void conv2d_3x3_s2_p1_fp32_mh_vpu(uint32_t hid,
                     }
                 }
 
-                /* Store the 4 valid lanes to out[oc, oh, ow4..ow4+3]. */
-                __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(acc) : "memory");
+                /* Store the 4 valid (strided) lanes to out[oc, oh, ow4..ow4+3].
+                 * Non-contiguous gather -- still needs the scratch+fence round
+                 * trip (can't do a single vector store to a strided dest), but
+                 * SiLU is now computed ONCE, vectorized, on all 8 lanes before
+                 * the store, instead of 4 separate scalar my_expf/fast_recip
+                 * calls after it. */
+                float _store_val = (act == 1u) ? vsilu_ps(acc) : acc;
+                __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(_store_val) : "memory");
                 __asm__ volatile("fence rw, rw" ::: "memory");
                 float *dst = out + (oc * OH + (uint32_t)oh) * OW + (uint32_t)ow4;
-                if (act == 1u) {
-                    dst[0] = silu(acc_buf[0]); dst[1] = silu(acc_buf[2]);
-                    dst[2] = silu(acc_buf[4]); dst[3] = silu(acc_buf[6]);
-                } else {
-                    dst[0] = acc_buf[0]; dst[1] = acc_buf[2];
-                    dst[2] = acc_buf[4]; dst[3] = acc_buf[6];
-                }
+                dst[0] = acc_buf[0]; dst[1] = acc_buf[2];
+                dst[2] = acc_buf[4]; dst[3] = acc_buf[6];
             }
         }
     }
@@ -1085,13 +1107,12 @@ static void conv2d_3x3_p1_fp32_mh_vpu_oc4(uint32_t hid,
                 }
 
 #define STORE_ACC(REG, OO) do { \
-    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(REG) : "memory"); \
-    __asm__ volatile("fence rw, rw" ::: "memory"); \
     float *dst = out + ((oc0 + OO) * H + (uint32_t)oh) * W_ + (uint32_t)ow8; \
     if (act == 1u) { \
-        for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]); \
+        float _t = vsilu_ps(REG); \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory"); \
     } else { \
-        for (int l = 0; l < 8; l++) dst[l] = acc_buf[l]; \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(REG) : "memory"); \
     } \
 } while (0)
                 STORE_ACC(a0, 0); STORE_ACC(a1, 1); STORE_ACC(a2, 2); STORE_ACC(a3, 3);
@@ -1172,13 +1193,12 @@ static void conv2d_dw3x3_s1_p1_fp32_mh_vpu(uint32_t hid,
                     }
                 }
 
-                __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(acc) : "memory");
-                __asm__ volatile("fence rw, rw" ::: "memory");
                 float *dst = out + (c * H + (uint32_t)oh) * W_ + (uint32_t)ow8;
                 if (act == 1u) {
-                    for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]);
+                    float _t = vsilu_ps(acc);
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory");
                 } else {
-                    for (int l = 0; l < 8; l++) dst[l] = acc_buf[l];
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(acc) : "memory");
                 }
             }
         }
