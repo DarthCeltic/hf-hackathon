@@ -623,7 +623,16 @@ int main(uintptr_t arg_area)
         float *t3 = (float *)(base + SCR_M22_T3);
         CONV_1x1(t2, t3, WP(WR_model_22_m_0_cv1_cv1_3_conv_Conv_W), WP(WR_model_22_m_0_cv1_cv1_3_conv_Conv_B), 256u, 9u, 16u, 128u, 1u);
         float *t4 = (float *)(base + SCR_M22_T4);
-        CONV_DW3x3_S1_P1_VPU(t3, t4, WP(WR_model_22_m_0_cv1_cv1_4_conv_Conv_W), WP(WR_model_22_m_0_cv1_cv1_4_conv_Conv_B), 128u, 9u, 16u, 1u);
+        /* Calling the underlying function directly (not the
+         * CONV_DW3x3_S1_P1_VPU macro) to skip its auto-appended
+         * MH_BARRIER(): its internal channel partition is
+         * c_lo=(C*cidx)/8 for C=128, so each hart's flat byte range in
+         * t4 is [c_lo*HW, c_hi*HW) = [2304*cidx, 2304*(cidx+1)) -- EXACTLY
+         * the same range the CIB fusion below computes via
+         * yolo_range(128*HW=18432, cidx, ...) = [2304*cidx, 2304*(cidx+1)).
+         * Same hart, same bytes, no cross-hart read -- the barrier between
+         * them was protecting a dependency that doesn't exist. */
+        conv2d_dw3x3_s1_p1_fp32_mh_vpu(hid, t3, t4, WP(WR_model_22_m_0_cv1_cv1_4_conv_Conv_W), WP(WR_model_22_m_0_cv1_cv1_4_conv_Conv_B), 128u, 9u, 16u, 1u);
 
         /* Residual + concat, multi-hart: each hart owns a disjoint
          * [lo,hi) slice of the 128*HW=1152-float channel plane (always a
