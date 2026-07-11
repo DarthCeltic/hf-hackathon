@@ -14,7 +14,7 @@
     "label": "Decode tokens/s",
     "higher_is_better": true
   },
-  "note": "Keep RWKV recurrent R/S state on the host because ET cannot execute its CPY operation. All model layers remain configured for ET offload.",
+  "note": "Keep RWKV recurrent R/S state on the host because ET cannot execute its CPY operation. All model layers remain configured for ET offload. batch_size/ubatch_size tuned 256/128 -> 512/256 (same values proven +47% decode on qwen3_8b via Modal Q8-F experiment).",
   "llama_server": {
     "source_artifact": "llama_cpp_source",
     "model_artifact": "rwkv7_15b_world_q8_gguf",
@@ -25,8 +25,8 @@
     "device": "ET",
     "gpu_layers": 99,
     "ctx_size": 2048,
-    "batch_size": 256,
-    "ubatch_size": 128,
+    "batch_size": 512,
+    "ubatch_size": 256,
     "parallel": 1,
     "cache_ram_mib": 0,
     "ready_timeout_s": 240,
