@@ -300,7 +300,7 @@ static inline void     mh_init_barrier(uint8_t *base) { (void)base; }
 
 /* Range slice: hart `t0_idx` (in 0..MH_NUM_T0) gets [lo, hi) of [0..N).
  * Uniform partition; remainder distributed to lowest indices. */
-static inline __attribute__((always_inline)) void mh_range(uint32_t N, uint32_t t0_idx,
+static inline void mh_range(uint32_t N, uint32_t t0_idx,
                             uint32_t *lo, uint32_t *hi)
 {
     *lo = (N * t0_idx) / MH_NUM_T0;
@@ -1202,7 +1202,7 @@ static void conv2d_dw3x3_s1_p1_fp32_mh_vpu(uint32_t hid,
  * more than 8-byte aligned already -- every SCR_* constant is a multiple
  * of 0x10000). A single odd tail element (N odd) is handled by the last
  * hart alone, outside the wide path. */
-static inline __attribute__((always_inline)) void mh_even_range(uint32_t N, uint32_t cidx, uint32_t *lo, uint32_t *hi) {
+static inline void mh_even_range(uint32_t N, uint32_t cidx, uint32_t *lo, uint32_t *hi) {
     uint32_t blk_lo, blk_hi;
     yolo_range(N / 2u, cidx, &blk_lo, &blk_hi);
     *lo = blk_lo * 2u;
@@ -1214,7 +1214,7 @@ static inline __attribute__((always_inline)) void mh_even_range(uint32_t N, uint
  * pure data movement, so packing two floats into one uint64_t transfer
  * is bit-identical to two scalar float copies, just half the memory
  * instructions. */
-static inline __attribute__((always_inline)) void mh_copy_floats(uint32_t hid, float *dst, const float *src, uint32_t N) {
+static inline void mh_copy_floats(uint32_t hid, float *dst, const float *src, uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t lo, hi;
@@ -1237,7 +1237,7 @@ static inline __attribute__((always_inline)) void mh_copy_floats(uint32_t hid, f
  * the VPU asm kernels this scalar path deliberately isn't -- but
  * unrolling still cuts loop-control overhead and gives the compiler two
  * independent adds per iteration to pipeline). */
-static inline __attribute__((always_inline)) void mh_add_floats(uint32_t hid, float *y, const float *a, const float *b, uint32_t N) {
+static inline void mh_add_floats(uint32_t hid, float *y, const float *a, const float *b, uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t lo, hi;
@@ -1256,7 +1256,7 @@ static inline __attribute__((always_inline)) void mh_add_floats(uint32_t hid, fl
 
 /* mh_iadd_floats: y += b, in place, multi-hart, 2x-unrolled (same
  * rationale as mh_add_floats). */
-static inline __attribute__((always_inline)) void mh_iadd_floats(uint32_t hid, float *y, const float *b, uint32_t N) {
+static inline void mh_iadd_floats(uint32_t hid, float *y, const float *b, uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t lo, hi;
@@ -1276,7 +1276,7 @@ static inline __attribute__((always_inline)) void mh_iadd_floats(uint32_t hid, f
 /* Multi-hart concat of 3 same-shape blocks into 3*N floats. 64-bit wide
  * copy for each of the 3 passes (pure data movement, same rationale as
  * mh_copy_floats), block-quantized to whole 2-float chunks per pass. */
-static inline __attribute__((always_inline)) void mh_concat3(uint32_t hid, float *dst,
+static inline void mh_concat3(uint32_t hid, float *dst,
                               const float *a, const float *b, const float *c,
                               uint32_t N) {
     if (!yolo_is_compute(hid)) return;
@@ -1312,7 +1312,7 @@ static inline __attribute__((always_inline)) void mh_concat3(uint32_t hid, float
 
 /* Multi-hart concat of 4 same-shape blocks (used by SPPF). Same 64-bit
  * wide-copy treatment as mh_concat3. */
-static inline __attribute__((always_inline)) void mh_concat4(uint32_t hid, float *dst,
+static inline void mh_concat4(uint32_t hid, float *dst,
                               const float *a, const float *b,
                               const float *c, const float *d,
                               uint32_t N) {
@@ -1360,7 +1360,7 @@ static inline __attribute__((always_inline)) void mh_concat4(uint32_t hid, float
 #define MH_CONCAT4(DST, A, B, C, D, N)   do { mh_concat4(hid, (DST), (A), (B), (C), (D), (N)); MH_BARRIER(); } while (0)
 
 /* Multi-hart 5x5 maxpool stride=1 pad=2 (used in SPPF). */
-static inline __attribute__((always_inline)) void mh_maxpool5_s1_p2(uint32_t hid, const float *in, float *out,
+static inline void mh_maxpool5_s1_p2(uint32_t hid, const float *in, float *out,
                               uint32_t C, uint32_t H, uint32_t W) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
@@ -1493,7 +1493,7 @@ static inline void transpose_2d(const float *in, float *out, uint32_t M, uint32_
  * each row here is itself always a multiple of 16 floats in every call
  * site used in this kernel). */
 
-static inline __attribute__((always_inline)) void mh_transpose_2d(uint32_t hid, const float *in, float *out,
+static inline void mh_transpose_2d(uint32_t hid, const float *in, float *out,
                                    uint32_t M, uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
@@ -1520,7 +1520,7 @@ static inline __attribute__((always_inline)) void mh_transpose_2d(uint32_t hid, 
  * those same rows needs no additional MH_BARRIER (the row-range partition
  * is identical to the matmul's own, so no hart ever reads another hart's
  * output before it's scaled). */
-static inline __attribute__((always_inline)) void mh_matmul_2d_fp32_scaled(uint32_t hid, const float *A, const float *B, float *C,
+static inline void mh_matmul_2d_fp32_scaled(uint32_t hid, const float *A, const float *B, float *C,
                                             uint32_t M, uint32_t K, uint32_t N, float scale) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
@@ -1538,12 +1538,12 @@ static inline __attribute__((always_inline)) void mh_matmul_2d_fp32_scaled(uint3
     }
     if (i_hi > i_lo) evict((const void *)(C + i_lo * N), (i_hi - i_lo) * N * sizeof(float));
 }
-static inline __attribute__((always_inline)) void mh_matmul_2d_fp32(uint32_t hid, const float *A, const float *B, float *C,
+static inline void mh_matmul_2d_fp32(uint32_t hid, const float *A, const float *B, float *C,
                                      uint32_t M, uint32_t K, uint32_t N) {
     mh_matmul_2d_fp32_scaled(hid, A, B, C, M, K, N, 1.0f);
 }
 
-static inline __attribute__((always_inline)) void mh_softmax_rows(uint32_t hid, float *x, uint32_t M, uint32_t N) {
+static inline void mh_softmax_rows(uint32_t hid, float *x, uint32_t M, uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t i_lo, i_hi;
@@ -1567,7 +1567,7 @@ static inline __attribute__((always_inline)) void mh_softmax_rows(uint32_t hid, 
  * 64-bit store (both halves set to the same value) replaces two separate
  * scalar stores. OW = W*2 is always even, so every output row splits into
  * whole pairs with no tail case. */
-static inline __attribute__((always_inline)) void mh_upsample_nearest_2x(uint32_t hid, const float *in, float *out,
+static inline void mh_upsample_nearest_2x(uint32_t hid, const float *in, float *out,
                                           uint32_t C, uint32_t H, uint32_t W) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
@@ -1602,7 +1602,7 @@ static inline __attribute__((always_inline)) void mh_upsample_nearest_2x(uint32_
  * wide copy instead of a per-element branch; bytes_a itself is even at
  * every call site (Ca is always an even channel count here), so the
  * segment boundaries stay 8-byte aligned too. */
-static inline __attribute__((always_inline)) void mh_concat2_c_chw(uint32_t hid, const float *a, uint32_t Ca,
+static inline void mh_concat2_c_chw(uint32_t hid, const float *a, uint32_t Ca,
                                      const float *b, uint32_t Cb,
                                      float *out, uint32_t H, uint32_t W) {
     if (!yolo_is_compute(hid)) return;
