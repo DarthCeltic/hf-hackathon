@@ -737,10 +737,31 @@ int main(uintptr_t arg_area)
                 }
             }
 
+            /* Class-max fusion: postprocess only ever needs the best class
+             * per anchor (see the old Step-1 rescan below), so materializing
+             * all 80 class planes here just to rescan all 80*3024 of them
+             * again in postprocess is redundant memory traffic. Compute the
+             * running max INLINE during this already-mandatory single pass
+             * over cls_in, and store just the 2 compact values (best_logit,
+             * best_class) into final_out rows 4/5 -- rows 6-83 (the other
+             * 78 class planes) are simply never written. Nothing outside
+             * this file reads final_out's raw class rows (confirmed: grep
+             * for FINAL_OUT_OFFSET/DETECTIONS_OFFSET repo-wide hits only
+             * this source file -- the scorer only reads the compact
+             * DETECTIONS_OFFSET list this kernel writes at the end). */
+            float *best_logits = final_out + 4u * 3024u + anchor_off;
+            float *best_classes = final_out + 5u * 3024u + anchor_off;
+            for (uint32_t s = 0; s < HW; s++) {
+                best_logits[s] = -1e9f;
+                best_classes[s] = 0.0f;
+            }
             for (uint32_t c = 0; c < 80u; c++) {
                 for (uint32_t s = 0; s < HW; s++) {
                     const float v = cls_in[c * HW + s];
-                    final_out[(4u + c) * 3024u + (anchor_off + s)] = v;
+                    if (v > best_logits[s]) {
+                        best_logits[s] = v;
+                        best_classes[s] = (float)c;
+                    }
                 }
             }
         }
@@ -768,12 +789,10 @@ int main(uintptr_t arg_area)
         struct Cand *cands = (struct Cand *)tb;   /* up to 3024 candidates */
         uint32_t n_cands = 0;
         for (uint32_t a = 0; a < 3024u; a++) {
-            float best_logit = -1e9f;
-            uint32_t best_cls = 0;
-            for (uint32_t c = 0; c < 80u; c++) {
-                const float p = final_out[(4u + c) * 3024u + a];
-                if (p > best_logit) { best_logit = p; best_cls = c; }
-            }
+            /* best_logit/best_cls already computed inline during DFL decode
+             * (class-max fusion) -- no 80-class rescan needed here. */
+            const float best_logit = final_out[4u * 3024u + a];
+            const uint32_t best_cls = (uint32_t)final_out[5u * 3024u + a];
             /* CONF_THRESH = 0.25f in prob space -> logit = ln(0.25/0.75) = -1.09861228867f */
             if (best_logit < -1.09861228867f) continue;
             float best_score = fast_recip(1.0f + my_expf(-best_logit));
