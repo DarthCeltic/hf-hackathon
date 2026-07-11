@@ -429,13 +429,19 @@ int main(uintptr_t arg_area)
          * positive; restored. mh_matmul_2d_fp32 now also uses the i,k,j
          * cache-friendly loop order (see yolo_common.h) instead of the
          * naive i,j,k order that strides through B on every k step. */
+        /* No barrier between transpose and matmul here: mh_transpose_2d's
+         * partition is yolo_range(N=HW, cidx, ...) and
+         * mh_matmul_2d_fp32_scaled's is yolo_range(M=HW, cidx, ...) --
+         * identical N==M==HW with the same cidx means every hart's
+         * transposed-row range EXACTLY equals its matmul-read-row range.
+         * No hart ever reads a QT row another hart wrote, so there is no
+         * cross-hart dependency this barrier could be protecting. Scale
+         * is also fused into this same matmul pass (mh_matmul_2d_fp32_scaled)
+         * for the same reason -- each hart scales only the rows it just
+         * wrote. */
         for (uint32_t h = 0; h < NHEAD; h++) {
             mh_transpose_2d(hid, Q + h * KEY_DIM * HW, QT + h * HW * KEY_DIM, KEY_DIM, HW);
         }
-        MH_BARRIER();
-        /* Scale fused directly into this matmul's per-hart output-row pass
-         * (mh_matmul_2d_fp32_scaled) -- no separate scale step, no extra
-         * MH_BARRIER, since each hart scales only the rows it just wrote. */
         for (uint32_t h = 0; h < NHEAD; h++) {
             mh_matmul_2d_fp32_scaled(hid, QT + h * HW * KEY_DIM, K + h * KEY_DIM * HW,
                                      logits + h * HW * HW, HW, KEY_DIM, HW, SCALE);
