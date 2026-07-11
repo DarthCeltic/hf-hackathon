@@ -412,6 +412,17 @@ static void conv2d_1x1_fp32_mh_vpu(uint32_t hid,
 
     float acc_buf[8] __attribute__((aligned(32)));
 
+    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
+    float vsilu_zero, vsilu_one, vsilu_log2e;
+    {
+        union { float f; uint32_t u; } _z; _z.f = 0.0f;
+        union { float f; uint32_t u; } _o; _o.f = 1.0f;
+        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
+    }
+
     for (uint32_t oc = oc_lo; oc < oc_hi; oc++) {
         const float bias_v = B[oc];
         union { float f; uint32_t u; } bb; bb.f = bias_v;
@@ -430,15 +441,22 @@ static void conv2d_1x1_fp32_mh_vpu(uint32_t hid,
                     __asm__ volatile("fmadd.ps %0, %1, %2, %0\n"
                                      : "+f"(acc) : "f"(v_pkg), "f"(w_pkg));
                 }
-                /* Store 8 lanes; apply scalar SiLU/activation. */
-                __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(acc) : "memory");
-                /* throwaway fsq2 to flush store buffer (depth-anything lesson) */
-                __asm__ volatile("fence rw, rw" ::: "memory");
                 float *dst = out + (oc * H + oh) * W_ + ow8;
                 if (act == 1u) {
-                    for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]);
+                    float _t;
+                    __asm__ volatile(
+                        "fsub.ps %[t], %[z], %[x]\n"
+                        "fmul.ps %[t], %[t], %[l2e]\n"
+                        "fexp.ps %[t], %[t]\n"
+                        "fadd.ps %[t], %[t], %[o]\n"
+                        "frcp.ps %[t], %[t]\n"
+                        "fmul.ps %[t], %[t], %[x]\n"
+                        : [t] "=&f"(_t)
+                        : [x] "f"(acc), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e)
+                    );
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory");
                 } else {
-                    for (int l = 0; l < 8; l++) dst[l] = acc_buf[l];
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(acc) : "memory");
                 }
             }
         }
@@ -472,6 +490,17 @@ static void conv2d_1x1_fp32_mh_vpu_oc8(uint32_t hid,
     *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / MH_NUM_T0;
 
     float acc_buf[8] __attribute__((aligned(32)));
+
+    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
+    float vsilu_zero, vsilu_one, vsilu_log2e;
+    {
+        union { float f; uint32_t u; } _z; _z.f = 0.0f;
+        union { float f; uint32_t u; } _o; _o.f = 1.0f;
+        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
+    }
 
     for (uint32_t tile = tile_lo; tile < tile_hi; tile++) {
         const uint32_t oc0 = tile * 8u;
@@ -527,13 +556,22 @@ static void conv2d_1x1_fp32_mh_vpu_oc8(uint32_t hid,
 
                 /* Store each accumulator with optional SiLU. */
 #define STORE_ACC(REG, OC_OFFSET) do { \
-    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(REG) : "memory"); \
-    __asm__ volatile("fence rw, rw" ::: "memory"); \
     float *dst = out + ((oc0 + OC_OFFSET) * H + oh) * W_ + ow8; \
     if (act == 1u) { \
-        for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]); \
+        float _t; \
+        __asm__ volatile( \
+            "fsub.ps %[t], %[z], %[x]\n" \
+            "fmul.ps %[t], %[t], %[l2e]\n" \
+            "fexp.ps %[t], %[t]\n" \
+            "fadd.ps %[t], %[t], %[o]\n" \
+            "frcp.ps %[t], %[t]\n" \
+            "fmul.ps %[t], %[t], %[x]\n" \
+            : [t] "=&f"(_t) \
+            : [x] "f"(REG), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e) \
+        ); \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory"); \
     } else { \
-        for (int l = 0; l < 8; l++) dst[l] = acc_buf[l]; \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(REG) : "memory"); \
     } \
 } while (0)
                 STORE_ACC(a0, 0); STORE_ACC(a1, 1); STORE_ACC(a2, 2); STORE_ACC(a3, 3);
@@ -568,6 +606,17 @@ static void conv2d_1x1_fp32_mh_vpu_oc16(uint32_t hid,
     *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / MH_NUM_T0;
 
     float acc_buf[8] __attribute__((aligned(32)));
+
+    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
+    float vsilu_zero, vsilu_one, vsilu_log2e;
+    {
+        union { float f; uint32_t u; } _z; _z.f = 0.0f;
+        union { float f; uint32_t u; } _o; _o.f = 1.0f;
+        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
+    }
 
     for (uint32_t tile = tile_lo; tile < tile_hi; tile++) {
         const uint32_t oc0 = tile * 16u;
@@ -653,13 +702,22 @@ static void conv2d_1x1_fp32_mh_vpu_oc16(uint32_t hid,
                 }
 
 #define STORE_ACC(REG, OO) do { \
-    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(REG) : "memory"); \
-    __asm__ volatile("fence rw, rw" ::: "memory"); \
     float *dst = out + ((oc0 + OO) * H + oh) * W_ + ow8; \
     if (act == 1u) { \
-        for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]); \
+        float _t; \
+        __asm__ volatile( \
+            "fsub.ps %[t], %[z], %[x]\n" \
+            "fmul.ps %[t], %[t], %[l2e]\n" \
+            "fexp.ps %[t], %[t]\n" \
+            "fadd.ps %[t], %[t], %[o]\n" \
+            "frcp.ps %[t], %[t]\n" \
+            "fmul.ps %[t], %[t], %[x]\n" \
+            : [t] "=&f"(_t) \
+            : [x] "f"(REG), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e) \
+        ); \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory"); \
     } else { \
-        for (int l = 0; l < 8; l++) dst[l] = acc_buf[l]; \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(REG) : "memory"); \
     } \
 } while (0)
                 STORE_ACC(a0, 0); STORE_ACC(a1, 1); STORE_ACC(a2, 2); STORE_ACC(a3, 3);
@@ -709,6 +767,17 @@ static void conv2d_3x3_p1_fp32_mh_vpu(uint32_t hid,
     *(volatile uint32_t *)&oc_hi = (OC * (cidx + 1u)) / MH_NUM_T0;
 
     float acc_buf[8] __attribute__((aligned(32)));
+
+    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
+    float vsilu_zero, vsilu_one, vsilu_log2e;
+    {
+        union { float f; uint32_t u; } _z; _z.f = 0.0f;
+        union { float f; uint32_t u; } _o; _o.f = 1.0f;
+        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
+    }
 
     for (uint32_t oc = oc_lo; oc < oc_hi; oc++) {
         const float bias_v = B[oc];
@@ -772,14 +841,22 @@ static void conv2d_3x3_p1_fp32_mh_vpu(uint32_t hid,
                     }
                 }
 
-                /* Store and apply scalar SiLU per lane. */
-                __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(acc) : "memory");
-                __asm__ volatile("fence rw, rw" ::: "memory");
                 float *dst = out + (oc * H + (uint32_t)oh) * W_ + (uint32_t)ow8;
                 if (act == 1u) {
-                    for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]);
+                    float _t;
+                    __asm__ volatile(
+                        "fsub.ps %[t], %[z], %[x]\n"
+                        "fmul.ps %[t], %[t], %[l2e]\n"
+                        "fexp.ps %[t], %[t]\n"
+                        "fadd.ps %[t], %[t], %[o]\n"
+                        "frcp.ps %[t], %[t]\n"
+                        "fmul.ps %[t], %[t], %[x]\n"
+                        : [t] "=&f"(_t)
+                        : [x] "f"(acc), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e)
+                    );
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory");
                 } else {
-                    for (int l = 0; l < 8; l++) dst[l] = acc_buf[l];
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(acc) : "memory");
                 }
             }
         }
@@ -931,6 +1008,17 @@ static void conv2d_3x3_s2_p1_fp32_mh_vpu(uint32_t hid,
 
     float acc_buf[8] __attribute__((aligned(32)));
 
+    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
+    float vsilu_zero, vsilu_one, vsilu_log2e;
+    {
+        union { float f; uint32_t u; } _z; _z.f = 0.0f;
+        union { float f; uint32_t u; } _o; _o.f = 1.0f;
+        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
+    }
+
     for (uint32_t oc = oc_lo; oc < oc_hi; oc++) {
         const float bias_v = B[oc];
         union { float f; uint32_t u; } bb; bb.f = bias_v;
@@ -996,13 +1084,26 @@ static void conv2d_3x3_s2_p1_fp32_mh_vpu(uint32_t hid,
                 }
 
                 /* Store the 4 valid lanes to out[oc, oh, ow4..ow4+3]. */
-                __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(acc) : "memory");
-                __asm__ volatile("fence rw, rw" ::: "memory");
                 float *dst = out + (oc * OH + (uint32_t)oh) * OW + (uint32_t)ow4;
                 if (act == 1u) {
-                    dst[0] = silu(acc_buf[0]); dst[1] = silu(acc_buf[2]);
-                    dst[2] = silu(acc_buf[4]); dst[3] = silu(acc_buf[6]);
+                    float _t;
+                    __asm__ volatile(
+                        "fsub.ps %[t], %[z], %[x]\n"
+                        "fmul.ps %[t], %[t], %[l2e]\n"
+                        "fexp.ps %[t], %[t]\n"
+                        "fadd.ps %[t], %[t], %[o]\n"
+                        "frcp.ps %[t], %[t]\n"
+                        "fmul.ps %[t], %[t], %[x]\n"
+                        : [t] "=&f"(_t)
+                        : [x] "f"(acc), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e)
+                    );
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(_t) : "memory");
+                    __asm__ volatile("fence rw, rw" ::: "memory");
+                    dst[0] = acc_buf[0]; dst[1] = acc_buf[2];
+                    dst[2] = acc_buf[4]; dst[3] = acc_buf[6];
                 } else {
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(acc) : "memory");
+                    __asm__ volatile("fence rw, rw" ::: "memory");
                     dst[0] = acc_buf[0]; dst[1] = acc_buf[2];
                     dst[2] = acc_buf[4]; dst[3] = acc_buf[6];
                 }
@@ -1033,6 +1134,17 @@ static void conv2d_3x3_p1_fp32_mh_vpu_oc4(uint32_t hid,
     *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / MH_NUM_T0;
 
     float acc_buf[8] __attribute__((aligned(32)));
+
+    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
+    float vsilu_zero, vsilu_one, vsilu_log2e;
+    {
+        union { float f; uint32_t u; } _z; _z.f = 0.0f;
+        union { float f; uint32_t u; } _o; _o.f = 1.0f;
+        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
+    }
 
     for (uint32_t tile = tile_lo; tile < tile_hi; tile++) {
         const uint32_t oc0 = tile * 4u;
@@ -1085,13 +1197,22 @@ static void conv2d_3x3_p1_fp32_mh_vpu_oc4(uint32_t hid,
                 }
 
 #define STORE_ACC(REG, OO) do { \
-    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(REG) : "memory"); \
-    __asm__ volatile("fence rw, rw" ::: "memory"); \
     float *dst = out + ((oc0 + OO) * H + (uint32_t)oh) * W_ + (uint32_t)ow8; \
     if (act == 1u) { \
-        for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]); \
+        float _t; \
+        __asm__ volatile( \
+            "fsub.ps %[t], %[z], %[x]\n" \
+            "fmul.ps %[t], %[t], %[l2e]\n" \
+            "fexp.ps %[t], %[t]\n" \
+            "fadd.ps %[t], %[t], %[o]\n" \
+            "frcp.ps %[t], %[t]\n" \
+            "fmul.ps %[t], %[t], %[x]\n" \
+            : [t] "=&f"(_t) \
+            : [x] "f"(REG), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e) \
+        ); \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory"); \
     } else { \
-        for (int l = 0; l < 8; l++) dst[l] = acc_buf[l]; \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(REG) : "memory"); \
     } \
 } while (0)
                 STORE_ACC(a0, 0); STORE_ACC(a1, 1); STORE_ACC(a2, 2); STORE_ACC(a3, 3);
@@ -1134,6 +1255,17 @@ static void conv2d_dw3x3_s1_p1_fp32_mh_vpu(uint32_t hid,
 
     float acc_buf[8] __attribute__((aligned(32)));
 
+    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
+    float vsilu_zero, vsilu_one, vsilu_log2e;
+    {
+        union { float f; uint32_t u; } _z; _z.f = 0.0f;
+        union { float f; uint32_t u; } _o; _o.f = 1.0f;
+        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
+    }
+
     for (uint32_t c = c_lo; c < c_hi; c++) {
         const float bias_v = B[c];
         union { float f; uint32_t u; } bb; bb.f = bias_v;
@@ -1172,13 +1304,22 @@ static void conv2d_dw3x3_s1_p1_fp32_mh_vpu(uint32_t hid,
                     }
                 }
 
-                __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(acc) : "memory");
-                __asm__ volatile("fence rw, rw" ::: "memory");
                 float *dst = out + (c * H + (uint32_t)oh) * W_ + (uint32_t)ow8;
                 if (act == 1u) {
-                    for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]);
+                    float _t;
+                    __asm__ volatile(
+                        "fsub.ps %[t], %[z], %[x]\n"
+                        "fmul.ps %[t], %[t], %[l2e]\n"
+                        "fexp.ps %[t], %[t]\n"
+                        "fadd.ps %[t], %[t], %[o]\n"
+                        "frcp.ps %[t], %[t]\n"
+                        "fmul.ps %[t], %[t], %[x]\n"
+                        : [t] "=&f"(_t)
+                        : [x] "f"(acc), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e)
+                    );
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory");
                 } else {
-                    for (int l = 0; l < 8; l++) dst[l] = acc_buf[l];
+                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(acc) : "memory");
                 }
             }
         }
