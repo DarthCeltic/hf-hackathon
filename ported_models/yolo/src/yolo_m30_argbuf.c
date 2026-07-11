@@ -238,7 +238,13 @@ int main(uintptr_t arg_area)
         float *m0_cv2 = (float *)(base + SCR_M2_M0_CV2);
         CONV_1x1(c1, concat, WP(WR_model_2_cv1_conv_Conv_W), WP(WR_model_2_cv1_conv_Conv_B), 32u, 72u, 128u, 32u, 1u);
         CONV_3x3_P1_VPU(y1, m0_cv1, WP(WR_model_2_m_0_cv1_conv_Conv_W), WP(WR_model_2_m_0_cv1_conv_Conv_B), 16u, 72u, 128u, 16u, 1u);
-        CONV_3x3_P1_VPU(m0_cv1, m0_cv2, WP(WR_model_2_m_0_cv2_conv_Conv_W), WP(WR_model_2_m_0_cv2_conv_Conv_B), 16u, 72u, 128u, 16u, 1u);
+        /* conv->MH_ADD barrier removed: conv2d_3x3_p1_fp32_mh_vpu's OC-based
+         * output partition (oc_lo=(OC*cidx)/8) lands on the same flat byte
+         * range as mh_add_floats's own N-partition whenever OC divides 8
+         * evenly (true here, OC=16) -- same hart, same range, no cross-hart
+         * read. y1 (MH_ADD's other operand) was fully settled by an earlier,
+         * unrelated barrier, so removing this one doesn't affect it. */
+        conv2d_3x3_p1_fp32_mh_vpu(hid, m0_cv1, m0_cv2, WP(WR_model_2_m_0_cv2_conv_Conv_W), WP(WR_model_2_m_0_cv2_conv_Conv_B), 16u, 72u, 128u, 16u, 1u);
         MH_ADD(m0_out, y1, m0_cv2, 16u * 72u * 128u);
         CONV_1x1(concat, c2f_m2, WP(WR_model_2_cv2_conv_Conv_W), WP(WR_model_2_cv2_conv_Conv_B), 48u, 72u, 128u, 32u, 1u);
     }
@@ -260,10 +266,10 @@ int main(uintptr_t arg_area)
         float *m1_cv2 = (float *)(base + SCR_M4_M1_CV2);
         CONV_1x1(c3, concat, WP(WR_model_4_cv1_conv_Conv_W), WP(WR_model_4_cv1_conv_Conv_B), 64u, 36u, 64u, 64u, 1u);
         CONV_3x3_P1_VPU(y1, m0_cv1, WP(WR_model_4_m_0_cv1_conv_Conv_W), WP(WR_model_4_m_0_cv1_conv_Conv_B), 32u, 36u, 64u, 32u, 1u);
-        CONV_3x3_P1_VPU(m0_cv1, m0_cv2, WP(WR_model_4_m_0_cv2_conv_Conv_W), WP(WR_model_4_m_0_cv2_conv_Conv_B), 32u, 36u, 64u, 32u, 1u);
+        conv2d_3x3_p1_fp32_mh_vpu(hid, m0_cv1, m0_cv2, WP(WR_model_4_m_0_cv2_conv_Conv_W), WP(WR_model_4_m_0_cv2_conv_Conv_B), 32u, 36u, 64u, 32u, 1u);
         MH_ADD(m0_out, y1, m0_cv2, 32u * HW);
         CONV_3x3_P1_VPU(m0_out, m1_cv1, WP(WR_model_4_m_1_cv1_conv_Conv_W), WP(WR_model_4_m_1_cv1_conv_Conv_B), 32u, 36u, 64u, 32u, 1u);
-        CONV_3x3_P1_VPU(m1_cv1, m1_cv2, WP(WR_model_4_m_1_cv2_conv_Conv_W), WP(WR_model_4_m_1_cv2_conv_Conv_B), 32u, 36u, 64u, 32u, 1u);
+        conv2d_3x3_p1_fp32_mh_vpu(hid, m1_cv1, m1_cv2, WP(WR_model_4_m_1_cv2_conv_Conv_W), WP(WR_model_4_m_1_cv2_conv_Conv_B), 32u, 36u, 64u, 32u, 1u);
         MH_ADD(m1_out, m0_out, m1_cv2, 32u * HW);
         CONV_1x1(concat, c2f_m4, WP(WR_model_4_cv2_conv_Conv_W), WP(WR_model_4_cv2_conv_Conv_B), 128u, 36u, 64u, 64u, 1u);
     }
@@ -289,10 +295,10 @@ int main(uintptr_t arg_area)
         float *m1_cv2 = (float *)(base + SCR_M6_M1_CV2);
         CONV_1x1(m5_cv2, concat, WP(WR_model_6_cv1_conv_Conv_W), WP(WR_model_6_cv1_conv_Conv_B), 128u, 18u, 32u, 128u, 1u);
         CONV_3x3_P1_VPU(y1, m0_cv1, WP(WR_model_6_m_0_cv1_conv_Conv_W), WP(WR_model_6_m_0_cv1_conv_Conv_B), 64u, 18u, 32u, 64u, 1u);
-        CONV_3x3_P1_VPU(m0_cv1, m0_cv2, WP(WR_model_6_m_0_cv2_conv_Conv_W), WP(WR_model_6_m_0_cv2_conv_Conv_B), 64u, 18u, 32u, 64u, 1u);
+        conv2d_3x3_p1_fp32_mh_vpu(hid, m0_cv1, m0_cv2, WP(WR_model_6_m_0_cv2_conv_Conv_W), WP(WR_model_6_m_0_cv2_conv_Conv_B), 64u, 18u, 32u, 64u, 1u);
         MH_ADD(m0_out, y1, m0_cv2, 64u * HW);
         CONV_3x3_P1_VPU(m0_out, m1_cv1, WP(WR_model_6_m_1_cv1_conv_Conv_W), WP(WR_model_6_m_1_cv1_conv_Conv_B), 64u, 18u, 32u, 64u, 1u);
-        CONV_3x3_P1_VPU(m1_cv1, m1_cv2, WP(WR_model_6_m_1_cv2_conv_Conv_W), WP(WR_model_6_m_1_cv2_conv_Conv_B), 64u, 18u, 32u, 64u, 1u);
+        conv2d_3x3_p1_fp32_mh_vpu(hid, m1_cv1, m1_cv2, WP(WR_model_6_m_1_cv2_conv_Conv_W), WP(WR_model_6_m_1_cv2_conv_Conv_B), 64u, 18u, 32u, 64u, 1u);
         MH_ADD(m1_out, m0_out, m1_cv2, 64u * HW);
         CONV_1x1(concat, c2f_m6, WP(WR_model_6_cv2_conv_Conv_W), WP(WR_model_6_cv2_conv_Conv_B), 256u, 18u, 32u, 128u, 1u);
     }
@@ -313,7 +319,7 @@ int main(uintptr_t arg_area)
         float *m0_cv2 = (float *)(base + SCR_M8_M0_CV2);
         CONV_1x1(m7_cv2, concat, WP(WR_model_8_cv1_conv_Conv_W), WP(WR_model_8_cv1_conv_Conv_B), 256u, 9u, 16u, 256u, 1u);
         CONV_3x3_P1_VPU(y1, m0_cv1, WP(WR_model_8_m_0_cv1_conv_Conv_W), WP(WR_model_8_m_0_cv1_conv_Conv_B), 128u, 9u, 16u, 128u, 1u);
-        CONV_3x3_P1_VPU(m0_cv1, m0_cv2, WP(WR_model_8_m_0_cv2_conv_Conv_W), WP(WR_model_8_m_0_cv2_conv_Conv_B), 128u, 9u, 16u, 128u, 1u);
+        conv2d_3x3_p1_fp32_mh_vpu(hid, m0_cv1, m0_cv2, WP(WR_model_8_m_0_cv2_conv_Conv_W), WP(WR_model_8_m_0_cv2_conv_Conv_B), 128u, 9u, 16u, 128u, 1u);
         MH_ADD(m0_out, y1, m0_cv2, 128u * HW);
         CONV_1x1(concat, c2f_m8, WP(WR_model_8_cv2_conv_Conv_W), WP(WR_model_8_cv2_conv_Conv_B), 384u, 9u, 16u, 256u, 1u);
     }
@@ -328,9 +334,24 @@ int main(uintptr_t arg_area)
         const uint32_t HW = 9u * 16u;
 
         CONV_1x1(c2f_m8, m9_cv1, WP(WR_model_9_cv1_conv_Conv_W), WP(WR_model_9_cv1_conv_Conv_B), 256u, 9u, 16u, 128u, 1u);
-        MH_MAXPOOL5(m9_cv1, m9_mp1, 128u, 9u, 16u);
-        MH_MAXPOOL5(m9_mp1, m9_mp2, 128u, 9u, 16u);
-        MH_MAXPOOL5(m9_mp2, m9_mp3, 128u, 9u, 16u);
+        /* mp1->mp2->mp3->concat chain: no barriers between any of these
+         * four steps. mh_maxpool5_s1_p2 partitions by channel
+         * (yolo_range(C=128, cidx, 8)) and NEVER reads across channels
+         * (the 5x5 window is entirely within one channel c), and all
+         * three calls use the identical C=128 -- so every hart's mp1
+         * write, mp2 read+write, and mp3 read+write are for the exact
+         * same channel range every time. mh_concat4's own flat partition
+         * (yolo_range(128*HW=18432, cidx, 8)) lands on the identical byte
+         * range too (verified: 18432/8=2304=16*144=c_lo*HW at every hart
+         * index, since 128/8=16 divides cleanly) -- so concat's reads of
+         * m9_mp1/m9_mp2/m9_mp3 are also each hart reading only what it
+         * itself just wrote. Calling the underlying functions directly
+         * (not the MH_MAXPOOL5/MH_CONCAT4 macros, which each auto-append
+         * MH_BARRIER()) to skip all 3 barriers; one barrier remains after
+         * concat (unchanged) before the subsequent CONV_1x1 consumer. */
+        mh_maxpool5_s1_p2(hid, m9_cv1, m9_mp1, 128u, 9u, 16u);
+        mh_maxpool5_s1_p2(hid, m9_mp1, m9_mp2, 128u, 9u, 16u);
+        mh_maxpool5_s1_p2(hid, m9_mp2, m9_mp3, 128u, 9u, 16u);
 
         /* concat [m9_cv1, mp1, mp2, mp3] = 512 channels at 9x16 */
         MH_CONCAT4(concat, m9_cv1, m9_mp1, m9_mp2, m9_mp3, 128u * HW);
