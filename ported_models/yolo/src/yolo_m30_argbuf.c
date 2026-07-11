@@ -753,21 +753,31 @@ int main(uintptr_t arg_area)
      *   uint32 count N
      *   then N x { uint32 class_id; float score; float x1,y1,x2,y2; }
      */
-    if (is_h0) {
-        const float CONF_THRESH = 0.25f;
-        const float IOU_THRESH  = 0.5f;
-        /* Step 1: scan anchors, keep those with max-class-prob >= CONF_THRESH.
-         * Build candidate list in scratch (use `tb`, plenty of space). */
-        struct __attribute__((packed)) Cand {
-            uint32_t class_id;
-            float    score;
-            float    x1, y1, x2, y2;
-            uint8_t  alive;
-            uint8_t  pad[3];
-        };
-        struct Cand *cands = (struct Cand *)tb;   /* up to 3024 candidates */
-        uint32_t n_cands = 0;
-        for (uint32_t a = 0; a < 3024u; a++) {
+    /* Step 1 (multi-hart): scan all 3024 anchors x 80 classes (241,920
+     * iterations) to find best-class+score per anchor and threshold-filter.
+     * Cannot compact into a survivors list here (needs a shared n_cands++
+     * counter -- no atomics exist anywhere in this file), so instead every
+     * hart writes its own disjoint anchor range into a FIXED dense[3024]
+     * array (alive=0/1 flag, no compaction, no shared state, no race).
+     * struct DCand is padded to exactly 32 bytes so 2 structs = 1 64-byte
+     * cache line; the 3024-anchor range is quantized to blocks of 2
+     * anchors before dividing across harts. */
+    struct __attribute__((packed)) DCand {
+        uint32_t class_id;
+        float    score;
+        float    x1, y1, x2, y2;
+        uint8_t  alive;
+        uint8_t  pad[7];
+    };
+    struct DCand *dense = (struct DCand *)tb;   /* dense[3024], 32B each = 96768B */
+    if (yolo_is_compute(hid)) {
+        const uint32_t cidx = yolo_compute_idx(hid);
+        const uint32_t num_blocks = 3024u / 2u;   /* = 1512 */
+        uint32_t blk_lo, blk_hi;
+        yolo_range(num_blocks, cidx, &blk_lo, &blk_hi);
+        const uint32_t a_lo = blk_lo * 2u, a_hi = blk_hi * 2u;
+
+        for (uint32_t a = a_lo; a < a_hi; a++) {
             float best_logit = -1e9f;
             uint32_t best_cls = 0;
             for (uint32_t c = 0; c < 80u; c++) {
@@ -775,19 +785,47 @@ int main(uintptr_t arg_area)
                 if (p > best_logit) { best_logit = p; best_cls = c; }
             }
             /* CONF_THRESH = 0.25f in prob space -> logit = ln(0.25/0.75) = -1.09861228867f */
-            if (best_logit < -1.09861228867f) continue;
-            float best_score = fast_recip(1.0f + my_expf(-best_logit));
+            if (best_logit < -1.09861228867f) { dense[a].alive = 0u; continue; }
+            const float best_score = fast_recip(1.0f + my_expf(-best_logit));
             const float cx = final_out[0u * 3024u + a];
             const float cy = final_out[1u * 3024u + a];
             const float bw = final_out[2u * 3024u + a];
             const float bh = final_out[3u * 3024u + a];
-            cands[n_cands].class_id = best_cls;
-            cands[n_cands].score    = best_score;
-            cands[n_cands].x1 = cx - 0.5f * bw;
-            cands[n_cands].y1 = cy - 0.5f * bh;
-            cands[n_cands].x2 = cx + 0.5f * bw;
-            cands[n_cands].y2 = cy + 0.5f * bh;
-            cands[n_cands].alive = 1u;
+            dense[a].class_id = best_cls;
+            dense[a].score    = best_score;
+            dense[a].x1 = cx - 0.5f * bw;
+            dense[a].y1 = cy - 0.5f * bh;
+            dense[a].x2 = cx + 0.5f * bw;
+            dense[a].y2 = cy + 0.5f * bh;
+            dense[a].alive = 1u;
+        }
+        if (a_hi > a_lo) evict((const void *)(dense + a_lo), (a_hi - a_lo) * sizeof(struct DCand));
+    }
+    MH_BARRIER();
+
+    if (is_h0) {
+        const float IOU_THRESH  = 0.5f;
+        /* Step 1b (single-hart, cheap O(3024) -- no 80-class inner loop):
+         * compact the dense array into the small survivors list the
+         * O(n^2) NMS below needs. */
+        struct __attribute__((packed)) Cand {
+            uint32_t class_id;
+            float    score;
+            float    x1, y1, x2, y2;
+            uint8_t  alive;
+            uint8_t  pad[3];
+        };
+        struct Cand *cands = (struct Cand *)td;   /* separate scratch from dense[] (tb) */
+        uint32_t n_cands = 0;
+        for (uint32_t a = 0; a < 3024u; a++) {
+            if (!dense[a].alive) continue;
+            cands[n_cands].class_id = dense[a].class_id;
+            cands[n_cands].score    = dense[a].score;
+            cands[n_cands].x1       = dense[a].x1;
+            cands[n_cands].y1       = dense[a].y1;
+            cands[n_cands].x2       = dense[a].x2;
+            cands[n_cands].y2       = dense[a].y2;
+            cands[n_cands].alive    = 1u;
             n_cands++;
         }
 
