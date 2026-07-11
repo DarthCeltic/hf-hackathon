@@ -683,28 +683,57 @@ int main(uintptr_t arg_area)
     const uint32_t HW0 = 36u * 64u;     /* 2304 */
     const uint32_t HW1 = 18u * 32u;     /* 576  */
 
-    /* DFL + box decode + class sigmoid (single-hart hart 0).
-     * The naive parallel-by-anchor version had a non-coherent-L1D race
-     * around the scattered writes to final_out (84 disjoint regions per
-     * hart), even with whole-buffer evicts.  Decode is only ~50 ms anyway. */
-    if (is_h0) {
-        for (uint32_t k = 0; k < 3u; k++) {
-            const float *reg_in;
-            const float *cls_in;
-            uint32_t H, W;
-            float stride;
-            uint32_t anchor_off;
-            if (k == 0u)      { reg_in = reg0; cls_in = cls0; H = 36u; W = 64u; stride = 8.0f;  anchor_off = 0u; }
-            else if (k == 1u) { reg_in = reg1; cls_in = cls1; H = 18u; W = 32u; stride = 16.0f; anchor_off = HW0; }
-            else              { reg_in = reg2; cls_in = cls2; H =  9u; W = 16u; stride = 32.0f; anchor_off = HW0 + HW1; }
-            const uint32_t HW = H * W;
+    /* DFL + box decode + class sigmoid, multi-hart, cache-line-aligned.
+     * A naive parallel-by-anchor split (plain yolo_range over the flat
+     * 3024-anchor count) causes a non-coherent-L1D lost-update race: hart
+     * boundaries don't land on 64-byte cache-line boundaries, so two harts
+     * can read-modify-write the same line and one write silently clobbers
+     * the other. FIX: partition the 3024 anchors into 189 blocks of 16
+     * (3024 = 189*16) BEFORE dividing across harts, so every hart's [a_lo,
+     * a_hi) is always a multiple of 16 -- exact-aligned to a 64-byte line,
+     * for every one of the 84 final_out rows this writes. Scale-selection
+     * is hoisted to per-segment granularity (at most 3 segments per hart,
+     * one per scale) rather than branched per-anchor -- both scale
+     * boundaries (HW0=2304, HW0+HW1=2880) are exact multiples of 16, so
+     * intersecting a hart's block range with a scale's range always stays
+     * 16-aligned. Position-isolated: this stage runs entirely after all
+     * VPU conv work is finished, so it cannot disrupt register allocation
+     * for the backbone/neck conv code the way interleaved multi-hart
+     * additions elsewhere in the file were found to. */
+    if (yolo_is_compute(hid)) {
+        const uint32_t cidx = yolo_compute_idx(hid);
+        const uint32_t num_blocks = 189u;   /* 3024 / 16 */
+        uint32_t blocks_lo, blocks_hi;
+        yolo_range(num_blocks, cidx, &blocks_lo, &blocks_hi);
+        const uint32_t a_lo = blocks_lo * 16u, a_hi = blocks_hi * 16u;
 
-            for (uint32_t e = 0; e < 4u; e++) {
-                for (uint32_t s = 0; s < HW; s++) {
+        const uint32_t seg_off[3] = { 0u, HW0, HW0 + HW1 };
+        const uint32_t seg_end[3] = { HW0, HW0 + HW1, 3024u };
+        const float *seg_reg[3] = { reg0, reg1, reg2 };
+        const float *seg_cls[3] = { cls0, cls1, cls2 };
+        const uint32_t seg_W[3] = { 64u, 32u, 16u };
+        const uint32_t seg_HW[3] = { HW0, HW1, 144u };
+        const float seg_stride[3] = { 8.0f, 16.0f, 32.0f };
+
+        for (uint32_t k = 0; k < 3u; k++) {
+            const uint32_t seg_lo = a_lo > seg_off[k] ? a_lo : seg_off[k];
+            const uint32_t seg_hi = a_hi < seg_end[k] ? a_hi : seg_end[k];
+            if (seg_hi <= seg_lo) continue;
+
+            const float *reg_in = seg_reg[k];
+            const float *cls_in = seg_cls[k];
+            const uint32_t W = seg_W[k], HW_cur = seg_HW[k], anchor_off = seg_off[k];
+            const float stride = seg_stride[k];
+
+            for (uint32_t a = seg_lo; a < seg_hi; a++) {
+                const uint32_t s = a - anchor_off;
+
+                float coords[4];
+                for (uint32_t e = 0; e < 4u; e++) {
                     float row[16];
                     float m = -3.4e38f;
                     for (uint32_t b = 0; b < 16u; b++) {
-                        row[b] = reg_in[(e*16u + b) * HW + s];
+                        row[b] = reg_in[(e*16u + b) * HW_cur + s];
                         if (row[b] > m) m = row[b];
                     }
                     float sumexp = 0.0f;
@@ -712,39 +741,31 @@ int main(uintptr_t arg_area)
                     const float inv = fast_recip(sumexp);
                     float ev = 0.0f;
                     for (uint32_t b = 0; b < 16u; b++) ev += row[b] * inv * (float)b;
-                    tb[e * HW + s] = ev;
+                    coords[e] = ev;
                 }
-            }
 
-            for (uint32_t h = 0; h < H; h++) {
-                for (uint32_t w = 0; w < W; w++) {
-                    const uint32_t s = h * W + w;
-                    const float a_cx = (float)w + 0.5f;
-                    const float a_cy = (float)h + 0.5f;
-                    const float lt_x = tb[0u*HW + s];
-                    const float lt_y = tb[1u*HW + s];
-                    const float rb_x = tb[2u*HW + s];
-                    const float rb_y = tb[3u*HW + s];
-                    const float left   = (a_cx - lt_x) * stride;
-                    const float top    = (a_cy - lt_y) * stride;
-                    const float right  = (a_cx + rb_x) * stride;
-                    const float bottom = (a_cy + rb_y) * stride;
-                    const uint32_t a = anchor_off + s;
-                    final_out[0u * 3024u + a] = (left + right) * 0.5f;
-                    final_out[1u * 3024u + a] = (top + bottom) * 0.5f;
-                    final_out[2u * 3024u + a] = right - left;
-                    final_out[3u * 3024u + a] = bottom - top;
-                }
-            }
+                const uint32_t h = s / W, w = s % W;
+                const float a_cx = (float)w + 0.5f;
+                const float a_cy = (float)h + 0.5f;
+                const float left   = (a_cx - coords[0]) * stride;
+                const float top    = (a_cy - coords[1]) * stride;
+                const float right  = (a_cx + coords[2]) * stride;
+                const float bottom = (a_cy + coords[3]) * stride;
+                final_out[0u * 3024u + a] = (left + right) * 0.5f;
+                final_out[1u * 3024u + a] = (top + bottom) * 0.5f;
+                final_out[2u * 3024u + a] = right - left;
+                final_out[3u * 3024u + a] = bottom - top;
 
-            for (uint32_t c = 0; c < 80u; c++) {
-                for (uint32_t s = 0; s < HW; s++) {
-                    const float v = cls_in[c * HW + s];
-                    final_out[(4u + c) * 3024u + (anchor_off + s)] = v;
+                for (uint32_t c = 0; c < 80u; c++) {
+                    final_out[(4u + c) * 3024u + a] = cls_in[c * HW_cur + s];
                 }
             }
         }
-        /* Skipped eviction of final_out to save memory bandwidth */
+        if (a_hi > a_lo) {
+            for (uint32_t f = 0; f < 84u; f++) {
+                evict((const void *)(final_out + f * 3024u + a_lo), (a_hi - a_lo) * sizeof(float));
+            }
+        }
     }
     MH_BARRIER();
 
