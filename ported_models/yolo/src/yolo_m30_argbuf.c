@@ -748,57 +748,28 @@ int main(uintptr_t arg_area)
     const uint32_t HW0 = 36u * 64u;     /* 2304 */
     const uint32_t HW1 = 18u * 32u;     /* 576  */
 
-    /* DFL + box decode + class sigmoid, multi-hart, cache-line-aligned.
-     * A naive parallel-by-anchor split (plain yolo_range over the flat
-     * 3024-anchor count) causes a non-coherent-L1D lost-update race: hart
-     * boundaries don't land on 64-byte cache-line boundaries, so two harts
-     * can read-modify-write the same line and one write silently clobbers
-     * the other. FIX: partition the 3024 anchors into 189 blocks of 16
-     * (3024 = 189*16) BEFORE dividing across harts, so every hart's [a_lo,
-     * a_hi) is always a multiple of 16 -- exact-aligned to a 64-byte line,
-     * for every one of the 84 final_out rows this writes. */
-    if (yolo_is_compute(hid)) {
-        const uint32_t cidx = yolo_compute_idx(hid);
-        const uint32_t num_blocks = 189u;   /* 3024 / 16 */
-        uint32_t blocks_lo, blocks_hi;
-        yolo_range(num_blocks, cidx, &blocks_lo, &blocks_hi);
-        const uint32_t a_lo = blocks_lo * 16u, a_hi = blocks_hi * 16u;
-
-        /* Select reg_in/cls_in/W/stride ONCE PER SCALE (3 segments max per
-         * hart), not once per anchor. Both scale boundaries (HW0=2304,
-         * HW0+HW1=2880) are exact multiples of 16, so intersecting a
-         * hart's already-16-aligned [a_lo,a_hi) with a scale's range
-         * always yields another 16-aligned segment -- no new cache-line
-         * risk. A per-anchor branch here (evaluated up to 3024 times
-         * across all harts) was a real, avoidable hot-loop cost on top of
-         * the actual DFL/box-decode work. */
-        const uint32_t seg_off[3] = { 0u, HW0, HW0 + HW1 };
-        const uint32_t seg_end[3] = { HW0, HW0 + HW1, 3024u };
-        const float *seg_reg[3] = { reg0, reg1, reg2 };
-        const float *seg_cls[3] = { cls0, cls1, cls2 };
-        const uint32_t seg_W[3] = { 64u, 32u, 16u };
-        const uint32_t seg_HW[3] = { HW0, HW1, 144u };
-        const float seg_stride[3] = { 8.0f, 16.0f, 32.0f };
-
+    /* DFL + box decode + class sigmoid (single-hart hart 0).
+     * The naive parallel-by-anchor version had a non-coherent-L1D race
+     * around the scattered writes to final_out (84 disjoint regions per
+     * hart), even with whole-buffer evicts.  Decode is only ~50 ms anyway. */
+    if (is_h0) {
         for (uint32_t k = 0; k < 3u; k++) {
-            const uint32_t seg_lo = a_lo > seg_off[k] ? a_lo : seg_off[k];
-            const uint32_t seg_hi = a_hi < seg_end[k] ? a_hi : seg_end[k];
-            if (seg_hi <= seg_lo) continue;
+            const float *reg_in;
+            const float *cls_in;
+            uint32_t H, W;
+            float stride;
+            uint32_t anchor_off;
+            if (k == 0u)      { reg_in = reg0; cls_in = cls0; H = 36u; W = 64u; stride = 8.0f;  anchor_off = 0u; }
+            else if (k == 1u) { reg_in = reg1; cls_in = cls1; H = 18u; W = 32u; stride = 16.0f; anchor_off = HW0; }
+            else              { reg_in = reg2; cls_in = cls2; H =  9u; W = 16u; stride = 32.0f; anchor_off = HW0 + HW1; }
+            const uint32_t HW = H * W;
 
-            const float *reg_in = seg_reg[k];
-            const float *cls_in = seg_cls[k];
-            const uint32_t W = seg_W[k], HW_cur = seg_HW[k], anchor_off = seg_off[k];
-            const float stride = seg_stride[k];
-
-            for (uint32_t a = seg_lo; a < seg_hi; a++) {
-                const uint32_t s = a - anchor_off;
-
-                float coords[4];
-                for (uint32_t e = 0; e < 4u; e++) {
+            for (uint32_t e = 0; e < 4u; e++) {
+                for (uint32_t s = 0; s < HW; s++) {
                     float row[16];
                     float m = -3.4e38f;
                     for (uint32_t b = 0; b < 16u; b++) {
-                        row[b] = reg_in[(e*16u + b) * HW_cur + s];
+                        row[b] = reg_in[(e*16u + b) * HW + s];
                         if (row[b] > m) m = row[b];
                     }
                     float sumexp = 0.0f;
@@ -806,31 +777,39 @@ int main(uintptr_t arg_area)
                     const float inv = fast_recip(sumexp);
                     float ev = 0.0f;
                     for (uint32_t b = 0; b < 16u; b++) ev += row[b] * inv * (float)b;
-                    coords[e] = ev;
+                    tb[e * HW + s] = ev;
                 }
+            }
 
-                const uint32_t h = s / W, w = s % W;
-                const float a_cx = (float)w + 0.5f;
-                const float a_cy = (float)h + 0.5f;
-                const float left   = (a_cx - coords[0]) * stride;
-                const float top    = (a_cy - coords[1]) * stride;
-                const float right  = (a_cx + coords[2]) * stride;
-                const float bottom = (a_cy + coords[3]) * stride;
-                final_out[0u * 3024u + a] = (left + right) * 0.5f;
-                final_out[1u * 3024u + a] = (top + bottom) * 0.5f;
-                final_out[2u * 3024u + a] = right - left;
-                final_out[3u * 3024u + a] = bottom - top;
+            for (uint32_t h = 0; h < H; h++) {
+                for (uint32_t w = 0; w < W; w++) {
+                    const uint32_t s = h * W + w;
+                    const float a_cx = (float)w + 0.5f;
+                    const float a_cy = (float)h + 0.5f;
+                    const float lt_x = tb[0u*HW + s];
+                    const float lt_y = tb[1u*HW + s];
+                    const float rb_x = tb[2u*HW + s];
+                    const float rb_y = tb[3u*HW + s];
+                    const float left   = (a_cx - lt_x) * stride;
+                    const float top    = (a_cy - lt_y) * stride;
+                    const float right  = (a_cx + rb_x) * stride;
+                    const float bottom = (a_cy + rb_y) * stride;
+                    const uint32_t a = anchor_off + s;
+                    final_out[0u * 3024u + a] = (left + right) * 0.5f;
+                    final_out[1u * 3024u + a] = (top + bottom) * 0.5f;
+                    final_out[2u * 3024u + a] = right - left;
+                    final_out[3u * 3024u + a] = bottom - top;
+                }
+            }
 
-                for (uint32_t c = 0; c < 80u; c++) {
-                    final_out[(4u + c) * 3024u + a] = cls_in[c * HW_cur + s];
+            for (uint32_t c = 0; c < 80u; c++) {
+                for (uint32_t s = 0; s < HW; s++) {
+                    const float v = cls_in[c * HW + s];
+                    final_out[(4u + c) * 3024u + (anchor_off + s)] = v;
                 }
             }
         }
-        if (a_hi > a_lo) {
-            for (uint32_t f = 0; f < 84u; f++) {
-                evict((const void *)(final_out + f * 3024u + a_lo), (a_hi - a_lo) * sizeof(float));
-            }
-        }
+        /* Skipped eviction of final_out to save memory bandwidth */
     }
     MH_BARRIER();
 
@@ -839,61 +818,11 @@ int main(uintptr_t arg_area)
      *   uint32 count N
      *   then N x { uint32 class_id; float score; float x1,y1,x2,y2; }
      */
-    /* Step 1 (multi-hart): scan all 3024 anchors x 80 classes (241,920
-     * iterations) to find best-class+score per anchor and threshold-filter.
-     * Cannot compact into a survivors list here (needs a shared n_cands++
-     * counter -- no atomics exist anywhere in this file), so instead every
-     * hart writes its own disjoint anchor range into a FIXED dense[3024]
-     * array (alive=0/1 flag, no compaction, no shared state, no race).
-     * struct DCand is padded to exactly 32 bytes so 2 structs = 1 64-byte
-     * cache line; the 3024-anchor range is quantized to blocks of 2
-     * anchors before dividing across harts. */
-    struct __attribute__((packed)) DCand {
-        uint32_t class_id;
-        float    score;
-        float    x1, y1, x2, y2;
-        uint8_t  alive;
-        uint8_t  pad[7];
-    };
-    struct DCand *dense = (struct DCand *)tb;   /* dense[3024], 32B each = 96768B */
-    if (yolo_is_compute(hid)) {
-        const uint32_t cidx = yolo_compute_idx(hid);
-        const uint32_t num_blocks = 3024u / 2u;   /* = 1512 */
-        uint32_t blk_lo, blk_hi;
-        yolo_range(num_blocks, cidx, &blk_lo, &blk_hi);
-        const uint32_t a_lo = blk_lo * 2u, a_hi = blk_hi * 2u;
-
-        for (uint32_t a = a_lo; a < a_hi; a++) {
-            float best_logit = -1e9f;
-            uint32_t best_cls = 0;
-            for (uint32_t c = 0; c < 80u; c++) {
-                const float p = final_out[(4u + c) * 3024u + a];
-                if (p > best_logit) { best_logit = p; best_cls = c; }
-            }
-            /* CONF_THRESH = 0.25f in prob space -> logit = ln(0.25/0.75) = -1.09861228867f */
-            if (best_logit < -1.09861228867f) { dense[a].alive = 0u; continue; }
-            const float best_score = fast_recip(1.0f + my_expf(-best_logit));
-            const float cx = final_out[0u * 3024u + a];
-            const float cy = final_out[1u * 3024u + a];
-            const float bw = final_out[2u * 3024u + a];
-            const float bh = final_out[3u * 3024u + a];
-            dense[a].class_id = best_cls;
-            dense[a].score    = best_score;
-            dense[a].x1 = cx - 0.5f * bw;
-            dense[a].y1 = cy - 0.5f * bh;
-            dense[a].x2 = cx + 0.5f * bw;
-            dense[a].y2 = cy + 0.5f * bh;
-            dense[a].alive = 1u;
-        }
-        if (a_hi > a_lo) evict((const void *)(dense + a_lo), (a_hi - a_lo) * sizeof(struct DCand));
-    }
-    MH_BARRIER();
-
     if (is_h0) {
+        const float CONF_THRESH = 0.25f;
         const float IOU_THRESH  = 0.5f;
-        /* Step 1b (single-hart, cheap O(3024) -- no 80-class inner loop):
-         * compact the dense array into the small survivors list the
-         * O(n^2) NMS below needs. */
+        /* Step 1: scan anchors, keep those with max-class-prob >= CONF_THRESH.
+         * Build candidate list in scratch (use `tb`, plenty of space). */
         struct __attribute__((packed)) Cand {
             uint32_t class_id;
             float    score;
@@ -901,17 +830,29 @@ int main(uintptr_t arg_area)
             uint8_t  alive;
             uint8_t  pad[3];
         };
-        struct Cand *cands = (struct Cand *)td;   /* separate scratch from dense[] (tb) */
+        struct Cand *cands = (struct Cand *)tb;   /* up to 3024 candidates */
         uint32_t n_cands = 0;
         for (uint32_t a = 0; a < 3024u; a++) {
-            if (!dense[a].alive) continue;
-            cands[n_cands].class_id = dense[a].class_id;
-            cands[n_cands].score    = dense[a].score;
-            cands[n_cands].x1       = dense[a].x1;
-            cands[n_cands].y1       = dense[a].y1;
-            cands[n_cands].x2       = dense[a].x2;
-            cands[n_cands].y2       = dense[a].y2;
-            cands[n_cands].alive    = 1u;
+            float best_logit = -1e9f;
+            uint32_t best_cls = 0;
+            for (uint32_t c = 0; c < 80u; c++) {
+                const float p = final_out[(4u + c) * 3024u + a];
+                if (p > best_logit) { best_logit = p; best_cls = c; }
+            }
+            /* CONF_THRESH = 0.25f in prob space -> logit = ln(0.25/0.75) = -1.09861228867f */
+            if (best_logit < -1.09861228867f) continue;
+            float best_score = fast_recip(1.0f + my_expf(-best_logit));
+            const float cx = final_out[0u * 3024u + a];
+            const float cy = final_out[1u * 3024u + a];
+            const float bw = final_out[2u * 3024u + a];
+            const float bh = final_out[3u * 3024u + a];
+            cands[n_cands].class_id = best_cls;
+            cands[n_cands].score    = best_score;
+            cands[n_cands].x1 = cx - 0.5f * bw;
+            cands[n_cands].y1 = cy - 0.5f * bh;
+            cands[n_cands].x2 = cx + 0.5f * bw;
+            cands[n_cands].y2 = cy + 0.5f * bh;
+            cands[n_cands].alive = 1u;
             n_cands++;
         }
 
