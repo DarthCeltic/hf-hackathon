@@ -23,8 +23,8 @@
     "device": "ET",
     "gpu_layers": 99,
     "ctx_size": 2048,
-    "batch_size": 256,
-    "ubatch_size": 128,
+    "batch_size": 512,
+    "ubatch_size": 256,
     "parallel": 1,
     "cache_ram_mib": 0,
     "ready_timeout_s": 180,
@@ -48,5 +48,6 @@
       "max_ppl": 1000.0,
       "chunks": 4
     }
-  }
+  },
+  "note": "batch_size/ubatch_size tuned 256/128 -> 512/256 (board-confirmed win: same values proven +47% decode on qwen3_8b via Modal Q8-F experiment)."
 }
