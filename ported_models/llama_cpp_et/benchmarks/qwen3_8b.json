@@ -14,7 +14,7 @@
     "label": "Decode tokens/s",
     "higher_is_better": true
   },
-  "note": "Non-MoE Qwen3 q8_0; ET backend lists this family as fully supported (gpu_layers=99). batch_size/ubatch_size tuned via Modal Q8-F (+47% proxy decode vs baseline).",
+  "note": "Non-MoE Qwen3 q8_0; ET backend lists this family as fully supported (gpu_layers=99). batch_size/ubatch_size tuned via Modal Q8-F (+47% proxy decode vs baseline). Included in this diff (benchmark_default=false normally excludes it from framework-wide board runs) to test the mul_mat_Q8_0/el_map_f32/get_rows_f32/glu_f32/rope_f32 (neox mask hoist) vector-mask hoist fixes against this model too.",
   "llama_server": {
     "source_artifact": "llama_cpp_source",
     "model_artifact": "qwen3_8b_q8_gguf",
