@@ -239,6 +239,7 @@ def ensure_llama_cpp_build(mcfg: dict[str, Any], lcfg: dict[str, Any], server_bi
     workdir_override = artifact_has_env_override(mcfg, workdir_artifact, "LFM25_LLAMA_WORKDIR")
     binaries_ready = is_file(server_bin) and (ppl_bin is None or is_file(ppl_bin))
     stamped_revision = revision_stamp.read_text().strip() if revision_stamp.is_file() else ""
+    reuse_trusted_build = os.environ.get("TRUSTED_LLAMA_REUSE_BUILD") == "1"
     if binaries_ready and source_revision and stamped_revision == source_revision:
         return
     if binaries_ready and source_revision and stamped_revision != source_revision:
@@ -252,11 +253,17 @@ def ensure_llama_cpp_build(mcfg: dict[str, Any], lcfg: dict[str, Any], server_bi
                 f"operator-provided llama.cpp workdir {workdir} was built from "
                 f"{stamped_revision or 'an unknown revision'}, not {source_revision}"
             )
-        print(
-            f"Removing llama.cpp build for stale source revision "
-            f"{stamped_revision or 'unknown'}; current revision is {source_revision}"
-        )
-        shutil.rmtree(workdir)
+        if reuse_trusted_build:
+            print(
+                f"Incrementally rebuilding trusted llama.cpp workdir from "
+                f"{stamped_revision or 'unknown'} to {source_revision}"
+            )
+        else:
+            print(
+                f"Removing llama.cpp build for stale source revision "
+                f"{stamped_revision or 'unknown'}; current revision is {source_revision}"
+            )
+            shutil.rmtree(workdir)
         binaries_ready = False
     if workdir_override:
         if binaries_ready:

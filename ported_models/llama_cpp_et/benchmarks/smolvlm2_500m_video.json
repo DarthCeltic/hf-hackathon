@@ -9,12 +9,12 @@
   },
   "artifacts_file": "../artifacts.json",
   "reference_contract": ".github/ci/reference/smolvlm2_500m_video.json",
-  "canonical_variant": "SmolVLM2-500M-Video-Instruct-Q8_0",
+  "canonical_variant": "SmolVLM2-500M-Video-Instruct",
   "score": {
-    "metric": "real_time_factor",
-    "label": "Video real-time factor",
+    "metric": "pmc_cycles",
+    "label": "ET firmware cycles",
     "higher_is_better": false,
-    "baseline_variant": "SmolVLM2-500M-Video-Instruct-Q8_0"
+    "baseline_variant": "SmolVLM2-500M-Video-Instruct"
   },
   "llama_server": {
     "source_artifact": "llama_cpp_source",
@@ -32,43 +32,38 @@
     "parallel": 1,
     "cache_ram_mib": 0,
     "ready_timeout_s": 180,
-    "request_timeout_s": 240,
+    "request_timeout_s": 300,
     "flash_attn": false,
-    "max_tokens": 8,
+    "max_tokens": 12,
     "temperature": 0,
     "top_k": 1,
     "require_full_offload": true,
     "require_zero_vision_fallbacks": true,
-    "allowed_vision_fallback_ops": []
+    "allowed_vision_fallback_ops": [],
+    "perplexity": {
+      "enabled": true,
+      "perplexity_artifact": "llama_perplexity",
+      "corpus_artifact": "wikitext2_raw_test",
+      "ctx_size": 128,
+      "batch_size": 128,
+      "ubatch_size": 128,
+      "timeout_s": 300,
+      "min_ppl": 1.0,
+      "max_ppl": 26.739,
+      "chunks": 4
+    }
   },
   "multimodal": {
     "frames_per_second": 1.0,
     "prompt_template": "<|im_start|>User: {media_markers}\n{question}<end_of_utterance>\nAssistant:",
     "cases": [
-      {
-        "name": "coco_cat",
-        "media_artifacts": ["smolvlm2_coco_cat_jpg"],
-        "question": "Name the animal in one word.",
-        "accepted_answers": ["cat", "tabby"]
-      },
-      {
-        "name": "coco_giraffes",
-        "media_artifacts": ["smolvlm2_coco_giraffes_jpg"],
-        "question": "Name the animal in one word.",
-        "accepted_answers": ["giraffe", "giraffes"]
-      },
-      {
-        "name": "cat_then_giraffes",
-        "media_artifacts": ["smolvlm2_coco_cat_jpg", "smolvlm2_coco_giraffes_jpg"],
-        "question": "Name the animal in the second image in one word.",
-        "accepted_answers": ["giraffe", "giraffes"]
-      },
-      {
-        "name": "giraffes_then_cat",
-        "media_artifacts": ["smolvlm2_coco_giraffes_jpg", "smolvlm2_coco_cat_jpg"],
-        "question": "Name the animal in the second image in one word.",
-        "accepted_answers": ["cat", "tabby"]
-      }
+      {"name": "video_dog", "fixtures": ["video_dog"], "question": "What animal is shown? Answer one word.", "accepted_answers": ["dog"]},
+      {"name": "video_inside_car", "fixtures": ["video_inside_car"], "question": "Where is the camera located: inside or outside the car? Answer one word.", "accepted_answers": ["inside"]},
+      {"name": "video_bridge", "fixtures": ["video_bridge"], "question": "What large structure is visible over the water? Answer one word.", "accepted_answers": ["bridge"]},
+      {"name": "video_mascara", "fixtures": ["video_mascara"], "question": "What cosmetic is the woman showing? Answer one word.", "accepted_answers": ["mascara"]},
+      {"name": "video_cat", "fixtures": ["video_cat"], "question": "What animal is shown? Answer one word.", "accepted_answers": ["cat"]},
+      {"name": "cat_then_giraffes", "fixtures": ["coco_cat", "coco_giraffes"], "question": "Name the animal in the second image in one word.", "accepted_answers": ["giraffe", "giraffes"]},
+      {"name": "giraffes_then_cat", "fixtures": ["coco_giraffes", "coco_cat"], "question": "Name the animal in the second image in one word.", "accepted_answers": ["cat", "tabby"]}
     ],
     "order_pair": ["cat_then_giraffes", "giraffes_then_cat"]
   }

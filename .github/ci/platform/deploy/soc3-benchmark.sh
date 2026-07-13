@@ -137,14 +137,29 @@ fi
 if [[ -n "${SOC3_FAIL_ON_MODEL_FAILURE:-}" ]]; then
   REMOTE_ENV+=("SOC3_FAIL_ON_MODEL_FAILURE=$(printf "%q" "${SOC3_FAIL_ON_MODEL_FAILURE}")")
 fi
+if [[ -n "${SOC3_SKIP_BOARD_SMOKE:-}" ]]; then
+  REMOTE_ENV+=("SOC3_SKIP_BOARD_SMOKE=$(printf "%q" "${SOC3_SKIP_BOARD_SMOKE}")")
+fi
+if [[ -n "${SMOLVLM2_SKIP_PPL:-}" ]]; then
+  REMOTE_ENV+=("SMOLVLM2_SKIP_PPL=$(printf "%q" "${SMOLVLM2_SKIP_PPL}")")
+fi
+if [[ -n "${SMOLVLM2_SKIP_HOST_REFERENCE:-}" ]]; then
+  REMOTE_ENV+=("SMOLVLM2_SKIP_HOST_REFERENCE=$(printf "%q" "${SMOLVLM2_SKIP_HOST_REFERENCE}")")
+fi
 if [[ -n "${LLAMA_CPP_ET_SOURCE_REVISION:-}" ]]; then
   REMOTE_ENV+=("LLAMA_CPP_ET_SOURCE_REVISION=$(printf "%q" "${LLAMA_CPP_ET_SOURCE_REVISION}")")
 fi
 if [[ -n "${TRUSTED_LLAMA_BUILD_KEY:-}" ]]; then
   REMOTE_ENV+=("TRUSTED_LLAMA_BUILD_KEY=$(printf "%q" "${TRUSTED_LLAMA_BUILD_KEY}")")
 fi
+if [[ -n "${TRUSTED_LLAMA_REUSE_BUILD:-}" ]]; then
+  REMOTE_ENV+=("TRUSTED_LLAMA_REUSE_BUILD=$(printf "%q" "${TRUSTED_LLAMA_REUSE_BUILD}")")
+fi
 if [[ -n "${TRUSTED_LLAMA_CPU_PPL_BIN:-}" ]]; then
   REMOTE_ENV+=("TRUSTED_LLAMA_CPU_PPL_BIN=$(printf "%q" "${TRUSTED_LLAMA_CPU_PPL_BIN}")")
+fi
+if [[ -n "${TRUSTED_SMOLVLM2_CPU_BUILD_KEY:-}" ]]; then
+  REMOTE_ENV+=("TRUSTED_SMOLVLM2_CPU_BUILD_KEY=$(printf "%q" "${TRUSTED_SMOLVLM2_CPU_BUILD_KEY}")")
 fi
 if [[ -n "${LAUNCHER:-}" ]]; then
   REMOTE_ENV+=("LAUNCHER=$(printf "%q" "${LAUNCHER}")")
@@ -181,6 +196,10 @@ for name in \
   SMOLLM2_135M_MODEL_PATH \
   SMOLLM2_360M_MODEL_PATH \
   SMOLLM2_17B_MODEL_PATH \
+  SMOLVLM2_500M_VIDEO_MODEL_PATH \
+  SMOLVLM2_500M_VIDEO_MMPROJ_PATH \
+  SMOLVLM2_COCO_CAT_PATH \
+  SMOLVLM2_COCO_GIRAFFES_PATH \
   LFM25_MODEL_PATH \
   LFM25_LD_LIBRARY_PATH \
   WIKITEXT_RAW_PATH; do
@@ -204,7 +223,7 @@ export ET_INSTALL="${ET_INSTALL:-/opt/et}"
 export ET_PLATFORM="${ET_PLATFORM:-/opt/et}"
 export TOOLCHAIN_DISTRO_VERSION="${TOOLCHAIN_DISTRO_VERSION:-22.04}"
 export PATH="${ET_INSTALL}/bin:/opt/et/bin:/opt/riscv/bin:${PATH}"
-export ET_LIB_PATH="${ET_LIB_PATH:-/opt/et/host:/opt/et/lib}"
+export ET_LIB_PATH="${ET_LIB_PATH:-/opt/et/lib:/opt/et/host}"
 export LD_LIBRARY_PATH="${ET_LIB_PATH}:${LD_LIBRARY_PATH:-}"
 export BOARD_LOCK="${BOARD_LOCK:-/var/lock/etsoc-shire0.lock}"
 export SOC3_PREBUILT="${SOC3_PREBUILT:-0}"
@@ -221,6 +240,15 @@ if [[ -n "$_llama_build_key" ]]; then
   export LLAMA_CPP_ET_WORKDIR="$DEST/local-artifacts/frameworks/llama.cpp-et/build-$_llama_build_key"
   export LLAMA_CPP_ET_SERVER="$LLAMA_CPP_ET_WORKDIR/bin/llama-server"
   export LLAMA_CPP_ET_PERPLEXITY="$LLAMA_CPP_ET_WORKDIR/bin/llama-perplexity"
+fi
+if [[ -n "${TRUSTED_SMOLVLM2_CPU_BUILD_KEY:-}" ]]; then
+  if [[ ! "$TRUSTED_SMOLVLM2_CPU_BUILD_KEY" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "error: trusted SmolVLM2 CPU build key must be a full git commit SHA" >&2
+    exit 2
+  fi
+  _smol_cpu_dir="$DEST/local-artifacts/frameworks/llama.cpp-et/build-$TRUSTED_SMOLVLM2_CPU_BUILD_KEY/bin"
+  export TRUSTED_SMOLVLM2_CPU_SERVER="$_smol_cpu_dir/llama-server"
+  export TRUSTED_SMOLVLM2_CPU_PERPLEXITY="$_smol_cpu_dir/llama-perplexity"
 fi
 if [[ -z "${LAUNCHER:-}" ]]; then
   if [[ -x "${ET_INSTALL}/bin/erbium_soc1sim_argbuf_dynmem" ]]; then
@@ -412,7 +440,7 @@ echo "Host: $(hostname) device=$(stat -c '%a %U:%G' /dev/et0_mgmt) launcher=$LAU
 
 chmod +x .github/ci/scripts/*.sh scripts/*.sh 2>/dev/null || true
 FAIL=0
-if ! board_smoke; then
+if [[ "${SOC3_SKIP_BOARD_SMOKE:-0}" != "1" ]] && ! board_smoke; then
   FAIL=1
 fi
 for model in $MODELS; do

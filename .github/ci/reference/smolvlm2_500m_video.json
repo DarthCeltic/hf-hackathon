@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "model": {
     "repo": "HuggingFaceTB/SmolVLM2-500M-Video-Instruct",
     "revision": "7b375e1b73b11138ff12fe22c8f2822d8fe03467",
@@ -23,88 +23,177 @@
       }
     }
   },
-  "conversion": {
-    "tool": "ported_models/llama_cpp_et/src/llama.cpp-et/convert_hf_to_gguf.py",
-    "tool_revision": "13da97147c0c8c04f0df410e77c8d202cebee3fb",
-    "outtype": "q8_0",
-    "canonical_gguf_repo": "ggml-org/SmolVLM2-500M-Video-Instruct-GGUF",
-    "canonical_gguf_revision": "ccd7aae53bcb1997355c2f094959e72b3642ce17",
-    "artifacts": {
-      "SmolVLM2-500M-Video-Instruct-Q8_0.gguf": {
-        "sha256": "6f67b8036b2469fcd71728702720c6b51aebd759b78137a8120733b4d66438bc",
-        "size_bytes": 436808704
-      },
-      "mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf": {
-        "sha256": "921dc7e259f308e5b027111fa185efcbf33db13f6e35749ddf7f5cdb60ef520b",
-        "size_bytes": 108785184
-      }
+  "baseline_artifacts": {
+    "model": {
+      "filename": "SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+      "sha256": "6f67b8036b2469fcd71728702720c6b51aebd759b78137a8120733b4d66438bc",
+      "size_bytes": 436808704
+    },
+    "projector": {
+      "filename": "mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+      "sha256": "921dc7e259f308e5b027111fa185efcbf33db13f6e35749ddf7f5cdb60ef520b",
+      "size_bytes": 108785184
+    },
+    "source_repo": "ggml-org/SmolVLM2-500M-Video-Instruct-GGUF",
+    "source_revision": "ccd7aae53bcb1997355c2f094959e72b3642ce17"
+  },
+  "architecture": {
+    "language": {
+      "general_architecture": "llama",
+      "model_name": "SmolVLM2 500M Video Instruct",
+      "parameter_count_millions": 409.25,
+      "tensor_count": 291,
+      "block_count": 32,
+      "embedding_length": 960,
+      "feed_forward_length": 2560,
+      "attention_heads": 15,
+      "attention_kv_heads": 5,
+      "vocabulary_size": 49280
+    },
+    "vision": {
+      "projector": "idefics3",
+      "tensor_count": 198,
+      "embedding_length": 768,
+      "attention_heads": 12,
+      "feed_forward_length": 3072,
+      "block_count": 12,
+      "projection_dimension": 960,
+      "image_size": 512,
+      "patch_size": 16
     }
+  },
+  "candidate_policy": {
+    "artifacts_must_match_baseline": true
+  },
+  "runtime": {
+    "submodule_path": "ported_models/llama_cpp_et/src/llama.cpp-et"
   },
   "input_contract": {
     "frames_per_second": 1.0,
     "processor_image_size": 512,
+    "prompt_template": "<|im_start|>User: {media_markers}\n{question}<end_of_utterance>\nAssistant:",
+    "dataset": {
+      "repo": "TIGER-Lab/VideoFeedback",
+      "revision": "4557cb71595098e68790bb35253225c2fe797dcf",
+      "split": "test",
+      "configuration": "real",
+      "license": "apache-2.0",
+      "source_archive_sha256": "db802b66c10efb9592c4860510ebad1246c1e7787b77af03a78c5e6aa921a032",
+      "sampling": "indices 0, round((n-1)/3), round(2*(n-1)/3), n-1"
+    },
     "fixtures": {
-      "smolvlm2_coco_cat_jpg": {
+      "video_dog": {
+        "source_id": "p008024",
+        "frames": [
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p008024_0.jpg", "sha256": "cd3d28d544b6042dda8421aaab93998642baf0f33d607ea0759deca4e8c126c4"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p008024_1.jpg", "sha256": "7bae34e5841454f3e839f5bfeb4c0f9970c47be74d65aab68bf334814dd7e6cc"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p008024_2.jpg", "sha256": "65babff2d0afb3313c13660d00caf202e57f988a6cb86ff61c2fb8915a17d071"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p008024_3.jpg", "sha256": "2c71d2adb31fa4d00958461b50d13999a94d3ae77c80f6c52027ea6022de8867"}
+        ]
+      },
+      "video_inside_car": {
+        "source_id": "p102449",
+        "frames": [
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p102449_0.jpg", "sha256": "4fba99b0c38077a0af457674f4192d8e1dbf61d7522211074efeed58be26b90c"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p102449_1.jpg", "sha256": "51eba365215473852d861d0b05e7a71491a89ea46fafc7cc6bd4ba97a6b40f5e"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p102449_2.jpg", "sha256": "85339b99997356c5f6acde5b74bf9863b9842a0d28711afb8dcc5934ff47473a"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p102449_3.jpg", "sha256": "7b1ad9b095472d530c3037ec4294ceec26ae2a7deb6a609a2c34e8383af59096"}
+        ]
+      },
+      "video_bridge": {
+        "source_id": "p002848",
+        "frames": [
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p002848_0.jpg", "sha256": "9cda8c1542978813ba36401cf2698b6454e999bc5d716082032d2b64e9be8b2c"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p002848_1.jpg", "sha256": "e44c25b388f6f0b99008ba21ef38ce7c9f089dfddaa368e4ccd57180d0f8b63f"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p002848_2.jpg", "sha256": "f0cde69a4a21d12dfba93f299289359fcd03345e8148cf43321a559735b007bc"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p002848_3.jpg", "sha256": "5e732b0dda7cd87ff2dfe1634c3769eea05edb25ee2d55ada649cd330320b01c"}
+        ]
+      },
+      "video_mascara": {
+        "source_id": "p110367",
+        "frames": [
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p110367_0.jpg", "sha256": "8ced4708b0fe91c6dd870602b598cc45577c31e30ef506d1ac8a11bfcd20ce7e"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p110367_1.jpg", "sha256": "dc2e85765ca2b4dd3f29481d009fd4195cdbb7ef15462e519145f654a95d405c"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p110367_2.jpg", "sha256": "eb52988eb264069cac5bf519a0449d2e1f83c611659ec83bd7dafaf2759ae1f3"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p110367_3.jpg", "sha256": "3567ab7e1aec83aa5d8e6a6898cc610a1de69b105c1a774fee9b368da5c58a09"}
+        ]
+      },
+      "video_cat": {
+        "source_id": "p003039",
+        "frames": [
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p003039_0.jpg", "sha256": "de74fe5e16de467fdcedd5f8310f3f7a2d92b8641501b4d8da370463e5c1f4d8"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p003039_1.jpg", "sha256": "2b91c6ee3fd840e4e128126514350c40e60c4b8373d30f3721a6039ecd064d1e"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p003039_2.jpg", "sha256": "7954500e84d45fd9574060dc75e0dcba6cf9a3e8ccb9de36c7d8f1afad711fcb"},
+          {"path": "ported_models/llama_cpp_et/assets/smolvlm2_video/p003039_3.jpg", "sha256": "da0708a30be289972d1f372a2f95fa820616fa536df95ef66de7b7b9e20d6a0d"}
+        ]
+      },
+      "coco_cat": {
+        "artifact": "smolvlm2_coco_cat_jpg",
         "source": "http://images.cocodataset.org/val2017/000000524280.jpg",
         "sha256": "3b83ffd2d2ce4c28a05b1dcd486edf8a06542584a05c9a66cf208df9ed6e2c7d"
       },
-      "smolvlm2_coco_giraffes_jpg": {
+      "coco_giraffes": {
+        "artifact": "smolvlm2_coco_giraffes_jpg",
         "source": "http://images.cocodataset.org/val2017/000000296969.jpg",
         "sha256": "1032b203f4b7faf2ea0268dddc1d9568e7ad8cbc39eb077b62ecf7b171bf90ff"
       }
     },
-    "prompt_template": "<|im_start|>User: {media_markers}\n{question}<end_of_utterance>\nAssistant:",
     "cases": [
-      {
-        "name": "coco_cat",
-        "media_artifacts": ["smolvlm2_coco_cat_jpg"],
-        "question": "Name the animal in one word.",
-        "accepted_answers": ["cat", "tabby"]
-      },
-      {
-        "name": "coco_giraffes",
-        "media_artifacts": ["smolvlm2_coco_giraffes_jpg"],
-        "question": "Name the animal in one word.",
-        "accepted_answers": ["giraffe", "giraffes"]
-      },
-      {
-        "name": "cat_then_giraffes",
-        "media_artifacts": ["smolvlm2_coco_cat_jpg", "smolvlm2_coco_giraffes_jpg"],
-        "question": "Name the animal in the second image in one word.",
-        "accepted_answers": ["giraffe", "giraffes"]
-      },
-      {
-        "name": "giraffes_then_cat",
-        "media_artifacts": ["smolvlm2_coco_giraffes_jpg", "smolvlm2_coco_cat_jpg"],
-        "question": "Name the animal in the second image in one word.",
-        "accepted_answers": ["cat", "tabby"]
-      }
+      {"name": "video_dog", "fixtures": ["video_dog"], "question": "What animal is shown? Answer one word.", "accepted_answers": ["dog"]},
+      {"name": "video_inside_car", "fixtures": ["video_inside_car"], "question": "Where is the camera located: inside or outside the car? Answer one word.", "accepted_answers": ["inside"]},
+      {"name": "video_bridge", "fixtures": ["video_bridge"], "question": "What large structure is visible over the water? Answer one word.", "accepted_answers": ["bridge"]},
+      {"name": "video_mascara", "fixtures": ["video_mascara"], "question": "What cosmetic is the woman showing? Answer one word.", "accepted_answers": ["mascara"]},
+      {"name": "video_cat", "fixtures": ["video_cat"], "question": "What animal is shown? Answer one word.", "accepted_answers": ["cat"]},
+      {"name": "cat_then_giraffes", "fixtures": ["coco_cat", "coco_giraffes"], "question": "Name the animal in the second image in one word.", "accepted_answers": ["giraffe", "giraffes"]},
+      {"name": "giraffes_then_cat", "fixtures": ["coco_giraffes", "coco_cat"], "question": "Name the animal in the second image in one word.", "accepted_answers": ["cat", "tabby"]}
     ],
     "order_pair": ["cat_then_giraffes", "giraffes_then_cat"]
   },
   "correctness": {
-    "host_reference": "CPU execution of the exact pinned model and mmproj GGUF artifacts",
+    "host_reference": "CPU execution of the candidate artifact through the main-owned runtime harness",
     "answer_comparison": "lowercase alphanumeric tokens, exact match",
-    "requirements": [
-      "Each board answer equals its CPU reference answer.",
-      "Each normalized answer belongs to the case's fixed accepted-answer set.",
-      "Reversing the two images changes the answer to the animal in the new second image.",
-      "The server log reports the CLIP vision encoder on ET and full LLM layer offload."
-    ],
+    "minimum_task_accuracy": 1.0,
+    "minimum_host_agreement": 1.0,
+    "ci_cases": ["video_dog"],
+    "require_order_pair_difference": true,
+    "require_full_offload": true,
     "require_zero_vision_fallbacks": true,
     "allowed_vision_fallback_ops": []
   },
+  "quality": {
+    "perplexity": {
+      "corpus_artifact": "wikitext2_raw_test",
+      "corpus_sha256": "173c87a53759e0201f33e0ccf978e510c2042d7f2cb78229d9a50d79b9e7dd08",
+      "context_size": 128,
+      "batch_size": 128,
+      "ubatch_size": 128,
+      "chunks": 4,
+      "first_run_perplexity": 22.2825,
+      "first_run_error": 4.80085,
+      "first_run_tokens": 512,
+      "max_relative_regression": 0.2,
+      "maximum_perplexity": 26.739,
+      "maximum_et_cpu_relative_difference": 0.01
+    }
+  },
   "performance": {
-    "metric": "real_time_factor",
-    "formula": "sum(board request wall time) / sum(input frame duration)",
+    "metric": "pmc_cycles",
+    "primary_counter": "device_cmd_exec_dur",
+    "profile_schema_version": 3,
+    "profile_class": "ResponseReceived",
+    "response_type": "Kernel",
+    "performance_case": "video_dog",
+    "warmup_repetitions": 0,
+    "measured_repetitions": 1,
+    "reuse_measured_request_for_correctness": true,
+    "generation_tokens": 3,
+    "aggregation": "median of per-request summed firmware cycles",
+    "minimum_kernel_launches_per_request": 4000,
+    "minimum_relative_improvement": 0.01,
+    "maximum_paired_baseline_drift": 0.005,
+    "minimum_end_to_end_improvement": 0.0025,
+    "maximum_paired_end_to_end_drift": 0.01,
     "lower_is_better": true,
-    "included": [
-      "local request transfer",
-      "image decode and preprocessing",
-      "vision encoder and projector",
-      "language-model prompt evaluation",
-      "answer decoding"
-    ],
-    "excluded": ["artifact download", "build", "model load", "CPU reference pass"]
+    "secondary_metric": "real_time_factor"
   }
 }

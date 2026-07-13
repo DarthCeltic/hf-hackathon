@@ -1,0 +1,227 @@
+name: Trusted SmolVLM2 PR gate
+run-name: "Trusted SmolVLM2 PR #${{ github.event.pull_request.number || inputs.pr_number }}"
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Open pull request number to evaluate"
+        required: true
+        type: string
+      approve_first_time:
+        description: "Approve board execution for a first-time contributor"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: trusted-smolvlm2-pr-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    name: Resolve trusted candidate
+    runs-on: ubuntu-latest
+    outputs:
+      pr: ${{ steps.pr.outputs.pr }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      actor: ${{ steps.pr.outputs.actor }}
+      merge_base: ${{ steps.candidate.outputs.merge_base }}
+      targeted: ${{ steps.candidate.outputs.targeted }}
+      needs_approval: ${{ steps.pr.outputs.needs_approval }}
+    steps:
+      - name: Resolve pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR: ${{ github.event.pull_request.number || '' }}
+          INPUT_PR: ${{ inputs.pr_number || '' }}
+          APPROVE_FIRST_TIME: ${{ inputs.approve_first_time || false }}
+        run: |
+          set -euo pipefail
+          pr="${EVENT_PR:-$INPUT_PR}"
+          payload="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}")"
+          head_sha="$(jq -r .head.sha <<< "$payload")"
+          actor="$(jq -r .user.login <<< "$payload")"
+          association="$(jq -r .author_association <<< "$payload")"
+          needs_approval=0
+          case "$association" in
+            FIRST_TIMER|FIRST_TIME_CONTRIBUTOR|NONE) needs_approval=1 ;;
+          esac
+          if [[ "$EVENT_NAME" == workflow_dispatch && "$APPROVE_FIRST_TIME" == true ]]; then
+            needs_approval=0
+          fi
+          {
+            echo "pr=$pr"
+            echo "head_sha=$head_sha"
+            echo "actor=$actor"
+            echo "needs_approval=$needs_approval"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Inspect candidate paths against current main
+        id: candidate
+        env:
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/${PR_NUMBER}/head"
+          [[ "$(git rev-parse "refs/remotes/pull/${PR_NUMBER}/head^{commit}")" == "$HEAD_SHA" ]]
+          merge_base="$(git merge-base HEAD "$HEAD_SHA")"
+          python3 .github/ci/scripts/prepare_trusted_smolvlm2_candidate.py \
+            --base "$merge_base" \
+            --head "$HEAD_SHA" \
+            --output-config /tmp/candidate-config.json \
+            --metadata /tmp/candidate-metadata.json
+          {
+            echo "merge_base=$merge_base"
+            echo "targeted=$(jq -r 'if .targeted then 1 else 0 end' /tmp/candidate-metadata.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish pending status
+        if: steps.candidate.outputs.targeted == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          NEEDS_APPROVAL: ${{ steps.pr.outputs.needs_approval }}
+        run: |
+          description='Queued against the current main-owned SmolVLM2 contract.'
+          if [[ "$NEEDS_APPROVAL" == 1 ]]; then
+            description='First-time contributor: maintainer approval is required.'
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+            -f state=pending \
+            -f context=trusted-model/smolvlm2_500m_video \
+            -f description="$description" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >/dev/null
+
+  board:
+    name: Trusted SmolVLM2 board evaluation
+    needs: resolve
+    if: needs.resolve.outputs.targeted == '1' && needs.resolve.outputs.needs_approval != '1'
+    runs-on: [self-hosted, Linux, X64, et-soc1, board-ci, single-board]
+    timeout-minutes: 10
+    outputs:
+      verdict_kind: ${{ steps.evaluate.outputs.verdict_kind }}
+    env:
+      HOME: /root
+      SOC3_LOCAL: ${{ vars.SOC3_LOCAL || '1' }}
+      SOC3_HOST: ${{ vars.SOC3_HOST || 'local' }}
+      SOC3_SSH_ALIAS: ${{ vars.SOC3_SSH_ALIAS || 'aifoundry1' }}
+      SOC3_SSH_KEY: ${{ vars.SOC3_SSH_KEY || '/root/.ssh/id_rsa' }}
+      USE_TAILSCALE_SSH: "0"
+      SOC3_BUILD_ET: ${{ vars.AIFOUNDRY1_SOC3_BUILD_ET || '/opt/et' }}
+      SOC3_REMOTE_ET_INSTALL: ${{ vars.AIFOUNDRY1_SOC3_REMOTE_ET_INSTALL || '/opt/et' }}
+      SOC3_REMOTE_ET_PLATFORM: ${{ vars.AIFOUNDRY1_SOC3_REMOTE_ET_PLATFORM || '/opt/et' }}
+      ET_PLATFORM_SRC: ${{ vars.AIFOUNDRY1_ET_PLATFORM_SRC || '' }}
+      ET_LIB_PATH: ${{ vars.AIFOUNDRY1_SOC3_ET_LIB_PATH || '/opt/et/lib:/opt/et/host' }}
+      GITHUB_ACTOR: ${{ needs.resolve.outputs.actor }}
+      LEADERBOARD_TEAM: ${{ needs.resolve.outputs.actor }}
+      WIKITEXT_RAW_PATH: ${{ vars.AIFOUNDRY1_WIKITEXT_RAW_PATH || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Fetch exact participant commit
+        env:
+          PR_NUMBER: ${{ needs.resolve.outputs.pr }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+        run: |
+          git fetch --no-tags origin \
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/${PR_NUMBER}/head"
+          [[ "$(git rev-parse "refs/remotes/pull/${PR_NUMBER}/head^{commit}")" == "$HEAD_SHA" ]]
+
+      - name: Run paired trusted evaluation
+        id: evaluate
+        env:
+          GITHUB_SHA: ${{ needs.resolve.outputs.head_sha }}
+          GITHUB_REF: refs/pull/${{ needs.resolve.outputs.pr }}/head
+        run: |
+          set +e
+          chmod +x .github/ci/scripts/*.sh .github/ci/platform/deploy/*.sh
+          .github/ci/scripts/run_trusted_smolvlm2_candidate.sh \
+            "${{ needs.resolve.outputs.merge_base }}" \
+            "${{ needs.resolve.outputs.head_sha }}" \
+            "$RUNNER_TEMP/trusted-smolvlm2"
+          rc=$?
+          set -e
+          case "$rc" in
+            0) verdict_kind=pass ;;
+            1) verdict_kind=candidate-failure ;;
+            2) verdict_kind=infrastructure-error ;;
+            *) verdict_kind=workflow-error ;;
+          esac
+          echo "verdict_kind=$verdict_kind" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trusted-smolvlm2-pr-${{ needs.resolve.outputs.pr }}
+          path: ${{ runner.temp }}/trusted-smolvlm2/
+          retention-days: 14
+          if-no-files-found: warn
+
+  publish:
+    name: Publish trusted SmolVLM2 merge status
+    needs: [resolve, board]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish final status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          TARGETED: ${{ needs.resolve.outputs.targeted }}
+          NEEDS_APPROVAL: ${{ needs.resolve.outputs.needs_approval }}
+          BOARD_RESULT: ${{ needs.board.result }}
+          VERDICT_KIND: ${{ needs.board.outputs.verdict_kind }}
+        run: |
+          if [[ "$RESOLVE_RESULT" != success ]]; then
+            state=failure
+            description='Candidate changed protected gate files or could not be resolved.'
+          elif [[ "$TARGETED" != 1 ]]; then
+            state=success
+            description='No SmolVLM2 implementation change.'
+          elif [[ "$NEEDS_APPROVAL" == 1 ]]; then
+            state=pending
+            description='First-time contributor: maintainer approval is required.'
+          elif [[ "$BOARD_RESULT" == success ]]; then
+            state=success
+            description='Correctness, PPL, paired cycles, and board drift passed.'
+          elif [[ "$VERDICT_KIND" == infrastructure-error ]]; then
+            state=error
+            description='Paired main failed or drifted; no candidate verdict produced.'
+          elif [[ "$VERDICT_KIND" == candidate-failure ]]; then
+            state=failure
+            description='Candidate failed correctness, PPL, or cycle improvement.'
+          else
+            state=error
+            description="Trusted SmolVLM2 workflow result: ${BOARD_RESULT}."
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+            -f state="$state" \
+            -f context=trusted-model/smolvlm2_500m_video \
+            -f description="$description" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >/dev/null
+          [[ "$state" == success ]]

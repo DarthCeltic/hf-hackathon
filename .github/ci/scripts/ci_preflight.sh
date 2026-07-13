@@ -22,6 +22,8 @@ python3 -m unittest discover -s .github/ci/scripts -p 'test_track_labels.py' \
   || bad "track label classifier tests failed"
 python3 -m unittest discover -s .github/ci/scripts -p 'test_smolvlm2_video_benchmark.py' \
   || bad "SmolVLM2 video benchmark tests failed"
+python3 -m unittest discover -s .github/ci/scripts -p 'test_trusted_smolvlm2_gate.py' \
+  || bad "trusted SmolVLM2 gate tests failed"
 python3 -m py_compile ported_models/yolo/tools/host_reference.py \
   || bad "YOLO host-reference compile errors"
 
@@ -40,6 +42,16 @@ if ! grep -qF 'uses: aifoundry-org/hf-hackathon/.github/workflows/benchmark-boar
 fi
 if ! grep -qF 'pull_request_target:' .github/workflows/trusted-yolo-pr.yml; then
   bad "trusted YOLO caller must be loaded from the default branch"
+fi
+if ! grep -qF 'pull_request_target:' .github/workflows/trusted-smolvlm2-pr.yml; then
+  bad "trusted SmolVLM2 workflow must be loaded from the default branch"
+fi
+if ! grep -qF 'context=trusted-model/smolvlm2_500m_video' \
+  .github/workflows/trusted-smolvlm2-pr.yml; then
+  bad "trusted SmolVLM2 workflow does not publish its merge status on the participant commit"
+fi
+if grep -qE '^[[:space:]]+paths:' .github/workflows/trusted-smolvlm2-pr.yml; then
+  bad "trusted SmolVLM2 final check must run on every PR so it can be required"
 fi
 if ! grep -qF 'run-name: "Trusted YOLO PR #' .github/workflows/trusted-yolo-pr.yml; then
   bad "trusted YOLO run name must retain the PR number and head SHA"

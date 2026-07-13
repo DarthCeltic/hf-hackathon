@@ -134,18 +134,23 @@ jobs:
               .github/ci/scripts/merge_leaderboard.py|\
               .github/ci/scripts/prepare_benchmark_inputs.sh|\
               .github/ci/scripts/prepare_trusted_llama32_candidate.py|\
+              .github/ci/scripts/prepare_trusted_smolvlm2_candidate.py|\
               .github/ci/scripts/prepare_trusted_yolo_tree.py|\
               .github/ci/scripts/refresh_trusted_llama32_prs.sh|\
+              .github/ci/scripts/refresh_trusted_smolvlm2_prs.sh|\
               .github/ci/scripts/refresh_trusted_yolo_prs.sh|\
               .github/ci/scripts/run_llama_server_benchmark.py|\
               .github/ci/scripts/run_smolvlm2_video_benchmark.py|\
               .github/ci/scripts/run_model_benchmark.sh|\
               .github/ci/scripts/run_trusted_llama_benchmark.py|\
               .github/ci/scripts/run_trusted_llama32_candidate.sh|\
+              .github/ci/scripts/run_trusted_smolvlm2_candidate.sh|\
               .github/ci/scripts/run_yolo_host_reference.sh|\
               .github/ci/scripts/score_results.py|\
               .github/ci/scripts/trusted_llama32_gate.py|\
               .github/ci/scripts/trusted_llama32_input_hash.sh|\
+              .github/ci/scripts/trusted_smolvlm2_gate.py|\
+              .github/ci/scripts/trusted_smolvlm2_input_hash.sh|\
               .github/ci/scripts/trusted_yolo_input_hash.sh|\
               scripts/run_sysemu_model_ports.sh|\
               ported_models/llama_cpp_et/benchmarks/smolvlm2_500m_video.json|\
@@ -262,6 +267,15 @@ jobs:
             models="$(python3 - "$models" <<'PY'
           import sys
           print(" ".join(model for model in sys.argv[1].split() if model != "yolo"))
+          PY
+          )"
+          fi
+          if [[ "$EVENT_NAME" == "pull_request" ]] \
+            && git cat-file -e "$PR_BASE_SHA:.github/workflows/trusted-smolvlm2-pr.yml" 2>/dev/null \
+            && [[ " $models " == *" smolvlm2_500m_video "* ]]; then
+            models="$(python3 - "$models" <<'PY'
+          import sys
+          print(" ".join(model for model in sys.argv[1].split() if model != "smolvlm2_500m_video"))
           PY
           )"
           fi
@@ -968,3 +982,45 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: .github/ci/scripts/refresh_trusted_llama32_prs.sh "${{ github.event.before }}" HEAD
+
+  invalidate-trusted-smolvlm2-prs:
+    name: Invalidate stale trusted SmolVLM2 checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Mark open SmolVLM2 PRs pending when trusted inputs changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/ci/scripts/refresh_trusted_smolvlm2_prs.sh "${{ github.event.before }}" HEAD pending-only
+
+  refresh-trusted-smolvlm2-prs:
+    name: Refresh open trusted SmolVLM2 checks
+    needs: [select-board-models, board-benchmark, update-leaderboard]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Re-run open SmolVLM2 PRs when trusted inputs changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/ci/scripts/refresh_trusted_smolvlm2_prs.sh "${{ github.event.before }}" HEAD
