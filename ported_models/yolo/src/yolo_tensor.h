@@ -234,12 +234,16 @@ static inline void conv2d_1x1_fp32_mh_tensor(uint32_t hid,
         evict((const void *)(out + oc_lo * H * W_), (oc_hi - oc_lo) * H * W_ * sizeof(float));
 }
 
-/* Override CONV_1x1 to route through the tensor dispatcher. */
+/* BISECTION TEST: tensor-unit override disabled, falls back to plain VPU
+ * (yolo_common.h's own CONV_1x1 definition), to isolate whether tensor-unit
+ * acceleration is the source of the real board's accuracy failure. */
+#if 0
 #undef CONV_1x1
 #define CONV_1x1(...) do { \
     conv2d_1x1_fp32_mh_tensor(hid, __VA_ARGS__); \
     MH_BARRIER(); \
 } while (0)
+#endif
 
 /* ------------------------------------------------------------------ */
 /* 3x3 stride=1 pad=1 conv via tensor FMA -- Tier 2                    */
@@ -436,11 +440,13 @@ static inline void conv2d_3x3_p1_fp32_mh_tensor(uint32_t hid, uint8_t *base,
         evict((const void *)(out + oc_lo * H * W_), (oc_hi - oc_lo) * H * W_ * sizeof(float));
 }
 
+#if 0
 #undef CONV_3x3_P1_VPU
 #define CONV_3x3_P1_VPU(...) do { \
     conv2d_3x3_p1_fp32_mh_tensor(hid, base, __VA_ARGS__); \
     MH_BARRIER(); \
 } while (0)
+#endif
 
 /* ------------------------------------------------------------------ */
 /* 3x3 stride=2 pad=1 conv via tensor FMA -- chunked-row activation     */
@@ -643,10 +649,12 @@ static inline void conv2d_3x3_s2_p1_fp32_mh_tensor(uint32_t hid, uint8_t *base,
         evict((const void *)(out + oc_lo_e * OH * OW), (oc_hi_e - oc_lo_e) * OH * OW * sizeof(float));
 }
 
+#if 0
 #undef CONV_3x3_S2_P1_VPU
 #define CONV_3x3_S2_P1_VPU(...) do { \
     conv2d_3x3_s2_p1_fp32_mh_tensor(hid, base, __VA_ARGS__); \
     MH_BARRIER(); \
 } while (0)
+#endif
 
 #endif /* YOLO_TENSOR_H */
