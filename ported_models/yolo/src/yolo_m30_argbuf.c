@@ -15,6 +15,7 @@
  */
 #include "yolo_common.h"
 #include "yolo_weight_offsets.h"
+#include "yolo_tensor.h"
 
 #define INPUT_OFFSET        0x00010000u
 #define RAW_INPUT_OFFSET    0x04A00000u   /* uint8 RGB [SH, SW, 3], HWC, host-loaded */
@@ -147,6 +148,16 @@ int main(uintptr_t arg_area)
     if (!mh_is_active_hart(hid)) return 0;
     const int is_h0 = mh_is_leader(hid);
 
+    /* Each T0 hart's L1D SCP mode is per-minion state (tensor_fma_start
+     * checks mcache_control per-core) -- every hart that might attempt
+     * a tensor op must enable its own SCP, not just hart 0. Failure is
+     * silently tolerated: tensor_can_handle() checks get_l1d_mode()
+     * itself and falls through to the existing VPU path if SCP never
+     * came up on this hart. */
+    if (mh_is_t0(hid)) {
+        (void)tensor_scp_enable();
+    }
+
     uint8_t *base = (uint8_t *)buffer_base_from_args(arg_area);
     mh_init_barrier(base);
 
@@ -244,7 +255,7 @@ int main(uintptr_t arg_area)
          * evenly (true here, OC=16) -- same hart, same range, no cross-hart
          * read. y1 (MH_ADD's other operand) was fully settled by an earlier,
          * unrelated barrier, so removing this one doesn't affect it. */
-        conv2d_3x3_p1_fp32_mh_vpu(hid, m0_cv1, m0_cv2, WP(WR_model_2_m_0_cv2_conv_Conv_W), WP(WR_model_2_m_0_cv2_conv_Conv_B), 16u, 72u, 128u, 16u, 1u);
+        conv2d_3x3_p1_fp32_mh_tensor(hid, base, m0_cv1, m0_cv2, WP(WR_model_2_m_0_cv2_conv_Conv_W), WP(WR_model_2_m_0_cv2_conv_Conv_B), 16u, 72u, 128u, 16u, 1u);
         MH_ADD(m0_out, y1, m0_cv2, 16u * 72u * 128u);
         CONV_1x1(concat, c2f_m2, WP(WR_model_2_cv2_conv_Conv_W), WP(WR_model_2_cv2_conv_Conv_B), 48u, 72u, 128u, 32u, 1u);
     }
@@ -266,10 +277,10 @@ int main(uintptr_t arg_area)
         float *m1_cv2 = (float *)(base + SCR_M4_M1_CV2);
         CONV_1x1(c3, concat, WP(WR_model_4_cv1_conv_Conv_W), WP(WR_model_4_cv1_conv_Conv_B), 64u, 36u, 64u, 64u, 1u);
         CONV_3x3_P1_VPU(y1, m0_cv1, WP(WR_model_4_m_0_cv1_conv_Conv_W), WP(WR_model_4_m_0_cv1_conv_Conv_B), 32u, 36u, 64u, 32u, 1u);
-        conv2d_3x3_p1_fp32_mh_vpu(hid, m0_cv1, m0_cv2, WP(WR_model_4_m_0_cv2_conv_Conv_W), WP(WR_model_4_m_0_cv2_conv_Conv_B), 32u, 36u, 64u, 32u, 1u);
+        conv2d_3x3_p1_fp32_mh_tensor(hid, base, m0_cv1, m0_cv2, WP(WR_model_4_m_0_cv2_conv_Conv_W), WP(WR_model_4_m_0_cv2_conv_Conv_B), 32u, 36u, 64u, 32u, 1u);
         MH_ADD(m0_out, y1, m0_cv2, 32u * HW);
         CONV_3x3_P1_VPU(m0_out, m1_cv1, WP(WR_model_4_m_1_cv1_conv_Conv_W), WP(WR_model_4_m_1_cv1_conv_Conv_B), 32u, 36u, 64u, 32u, 1u);
-        conv2d_3x3_p1_fp32_mh_vpu(hid, m1_cv1, m1_cv2, WP(WR_model_4_m_1_cv2_conv_Conv_W), WP(WR_model_4_m_1_cv2_conv_Conv_B), 32u, 36u, 64u, 32u, 1u);
+        conv2d_3x3_p1_fp32_mh_tensor(hid, base, m1_cv1, m1_cv2, WP(WR_model_4_m_1_cv2_conv_Conv_W), WP(WR_model_4_m_1_cv2_conv_Conv_B), 32u, 36u, 64u, 32u, 1u);
         MH_ADD(m1_out, m0_out, m1_cv2, 32u * HW);
         CONV_1x1(concat, c2f_m4, WP(WR_model_4_cv2_conv_Conv_W), WP(WR_model_4_cv2_conv_Conv_B), 128u, 36u, 64u, 64u, 1u);
     }
@@ -295,10 +306,10 @@ int main(uintptr_t arg_area)
         float *m1_cv2 = (float *)(base + SCR_M6_M1_CV2);
         CONV_1x1(m5_cv2, concat, WP(WR_model_6_cv1_conv_Conv_W), WP(WR_model_6_cv1_conv_Conv_B), 128u, 18u, 32u, 128u, 1u);
         CONV_3x3_P1_VPU(y1, m0_cv1, WP(WR_model_6_m_0_cv1_conv_Conv_W), WP(WR_model_6_m_0_cv1_conv_Conv_B), 64u, 18u, 32u, 64u, 1u);
-        conv2d_3x3_p1_fp32_mh_vpu(hid, m0_cv1, m0_cv2, WP(WR_model_6_m_0_cv2_conv_Conv_W), WP(WR_model_6_m_0_cv2_conv_Conv_B), 64u, 18u, 32u, 64u, 1u);
+        conv2d_3x3_p1_fp32_mh_tensor(hid, base, m0_cv1, m0_cv2, WP(WR_model_6_m_0_cv2_conv_Conv_W), WP(WR_model_6_m_0_cv2_conv_Conv_B), 64u, 18u, 32u, 64u, 1u);
         MH_ADD(m0_out, y1, m0_cv2, 64u * HW);
         CONV_3x3_P1_VPU(m0_out, m1_cv1, WP(WR_model_6_m_1_cv1_conv_Conv_W), WP(WR_model_6_m_1_cv1_conv_Conv_B), 64u, 18u, 32u, 64u, 1u);
-        conv2d_3x3_p1_fp32_mh_vpu(hid, m1_cv1, m1_cv2, WP(WR_model_6_m_1_cv2_conv_Conv_W), WP(WR_model_6_m_1_cv2_conv_Conv_B), 64u, 18u, 32u, 64u, 1u);
+        conv2d_3x3_p1_fp32_mh_tensor(hid, base, m1_cv1, m1_cv2, WP(WR_model_6_m_1_cv2_conv_Conv_W), WP(WR_model_6_m_1_cv2_conv_Conv_B), 64u, 18u, 32u, 64u, 1u);
         MH_ADD(m1_out, m0_out, m1_cv2, 64u * HW);
         CONV_1x1(concat, c2f_m6, WP(WR_model_6_cv2_conv_Conv_W), WP(WR_model_6_cv2_conv_Conv_B), 256u, 18u, 32u, 128u, 1u);
     }
@@ -319,7 +330,7 @@ int main(uintptr_t arg_area)
         float *m0_cv2 = (float *)(base + SCR_M8_M0_CV2);
         CONV_1x1(m7_cv2, concat, WP(WR_model_8_cv1_conv_Conv_W), WP(WR_model_8_cv1_conv_Conv_B), 256u, 9u, 16u, 256u, 1u);
         CONV_3x3_P1_VPU(y1, m0_cv1, WP(WR_model_8_m_0_cv1_conv_Conv_W), WP(WR_model_8_m_0_cv1_conv_Conv_B), 128u, 9u, 16u, 128u, 1u);
-        conv2d_3x3_p1_fp32_mh_vpu(hid, m0_cv1, m0_cv2, WP(WR_model_8_m_0_cv2_conv_Conv_W), WP(WR_model_8_m_0_cv2_conv_Conv_B), 128u, 9u, 16u, 128u, 1u);
+        conv2d_3x3_p1_fp32_mh_tensor(hid, base, m0_cv1, m0_cv2, WP(WR_model_8_m_0_cv2_conv_Conv_W), WP(WR_model_8_m_0_cv2_conv_Conv_B), 128u, 9u, 16u, 128u, 1u);
         MH_ADD(m0_out, y1, m0_cv2, 128u * HW);
         CONV_1x1(concat, c2f_m8, WP(WR_model_8_cv2_conv_Conv_W), WP(WR_model_8_cv2_conv_Conv_B), 384u, 9u, 16u, 256u, 1u);
     }
