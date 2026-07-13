@@ -154,9 +154,17 @@ int main(uintptr_t arg_area)
      * silently tolerated: tensor_can_handle() checks get_l1d_mode()
      * itself and falls through to the existing VPU path if SCP never
      * came up on this hart. */
+#if 0
+    /* Bisection: disabled alongside the 3 tensor-unit conv macro overrides
+     * in yolo_tensor.h. This call is otherwise unconditional and independent
+     * of those macros -- disabling only the macros still leaves L1D-split/
+     * SCP mode enabled for the whole kernel. This is the true full-disable
+     * control (see corpus yolo_BISECTION_TEST_HAD_UNCONTROLLED_SCP_VARIABLE_
+     * 2026_07_13). */
     if (mh_is_t0(hid)) {
         (void)tensor_scp_enable();
     }
+#endif
 
     uint8_t *base = (uint8_t *)buffer_base_from_args(arg_area);
     mh_init_barrier(base);
