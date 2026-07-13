@@ -418,27 +418,41 @@ int main(uintptr_t arg_area)
         /* pe = depthwise Conv3x3 pad1 on V_resh (no activation). */
         CONV_DW3x3_S1_P1_VPU(V_resh, pe, WP(WR_model_10_attn_pe_conv_Conv_W), WP(WR_model_10_attn_pe_conv_Conv_B), 128u, 9u, 16u, 0u);
 
-        /* Attention scoring + softmax + value matmul + pe-add (single hart). */
-        if (is_h0) {
-            for (uint32_t h = 0; h < NHEAD; h++) {
-                transpose_2d(Q + h * KEY_DIM * HW, QT + h * HW * KEY_DIM, KEY_DIM, HW);
-            }
-            for (uint32_t h = 0; h < NHEAD; h++) {
-                matmul_2d_fp32(QT + h * HW * KEY_DIM, K + h * KEY_DIM * HW,
-                               logits + h * HW * HW, HW, KEY_DIM, HW);
-            }
-            for (uint32_t i = 0; i < NHEAD * HW * HW; i++) logits[i] *= SCALE;
-            softmax_rows(logits, NHEAD * HW, HW);
-            for (uint32_t h = 0; h < NHEAD; h++) {
-                transpose_2d(logits + h * HW * HW, sm_T + h * HW * HW, HW, HW);
-            }
-            for (uint32_t h = 0; h < NHEAD; h++) {
-                matmul_2d_fp32(V + h * HEAD_DIM * HW, sm_T + h * HW * HW,
-                               attn_o + h * HEAD_DIM * HW, HEAD_DIM, HW, HW);
-            }
-            for (uint32_t i = 0; i < 128u * HW; i++) attn_o[i] += pe[i];
-            evict((const void *)attn_o, 128u * HW * sizeof(float));
-            WAIT_CACHEOPS; FENCE;
+        /* Attention scoring + softmax + value matmul + pe-add, multi-hart. */
+        for (uint32_t h = 0; h < NHEAD; h++) {
+            mh_transpose_2d(hid, Q + h * KEY_DIM * HW, QT + h * HW * KEY_DIM, KEY_DIM, HW);
+        }
+        MH_BARRIER();
+        for (uint32_t h = 0; h < NHEAD; h++) {
+            mh_matmul_2d_fp32(hid, QT + h * HW * KEY_DIM, K + h * KEY_DIM * HW,
+                              logits + h * HW * HW, HW, KEY_DIM, HW);
+        }
+        MH_BARRIER();
+        if (yolo_is_compute(hid)) {
+            const uint32_t cidx = yolo_compute_idx(hid);
+            uint32_t lo, hi;
+            yolo_range(NHEAD * HW * HW, cidx, &lo, &hi);
+            for (uint32_t i = lo; i < hi; i++) logits[i] *= SCALE;
+            if (hi > lo) evict((const void *)(logits + lo), (hi - lo) * sizeof(float));
+        }
+        MH_BARRIER();
+        mh_softmax_rows(hid, logits, NHEAD * HW, HW);
+        MH_BARRIER();
+        for (uint32_t h = 0; h < NHEAD; h++) {
+            mh_transpose_2d(hid, logits + h * HW * HW, sm_T + h * HW * HW, HW, HW);
+        }
+        MH_BARRIER();
+        for (uint32_t h = 0; h < NHEAD; h++) {
+            mh_matmul_2d_fp32(hid, V + h * HEAD_DIM * HW, sm_T + h * HW * HW,
+                              attn_o + h * HEAD_DIM * HW, HEAD_DIM, HW, HW);
+        }
+        MH_BARRIER();
+        if (yolo_is_compute(hid)) {
+            const uint32_t cidx = yolo_compute_idx(hid);
+            uint32_t lo, hi;
+            yolo_range(128u * HW, cidx, &lo, &hi);
+            for (uint32_t i = lo; i < hi; i++) attn_o[i] += pe[i];
+            if (hi > lo) evict((const void *)(attn_o + lo), (hi - lo) * sizeof(float));
         }
         MH_BARRIER();
 
@@ -480,11 +494,11 @@ int main(uintptr_t arg_area)
     /* m.11: nearest-2x upsample of psa_out [256,9,16] -> [256,18,32]. */
     {
         float *up = (float *)(base + SCR_M11_UP);
-        H0_RUN(upsample_nearest_2x(psa_out,up,256u,9u,16u), up, (256u)*(9u*2u)*(16u*2u)*sizeof(float));
+        MH_UPSAMPLE2X(psa_out,up,256u,9u,16u);
 
         /* m.12: concat [up, c2f_m6] axis=1 -> [384,18,32] */
         float *cat = (float *)(base + SCR_M12_CONCAT);
-        H0_RUN(concat_c_chw(up,256u,c2f_m6,128u,cat,18u,32u), cat, ((256u)+(128u))*(18u)*(32u)*sizeof(float));
+        MH_CONCAT2(up,256u,c2f_m6,128u,cat,18u,32u);
 
         /* m.13: C2f without shortcut.
          *   cv1: 384 -> 128, 1x1+SiLU; split -> y0(64)+y1(64)
@@ -516,9 +530,9 @@ int main(uintptr_t arg_area)
     /* m.14: nearest-2x upsample of m13 -> [128,36,64]; m.15: concat with c2f_m4 [64,36,64] = [192,36,64]. */
     {
         float *up = (float *)(base + SCR_M14_UP);
-        H0_RUN(upsample_nearest_2x(m13_cv2_out,up,128u,18u,32u), up, (128u)*(18u*2u)*(32u*2u)*sizeof(float));
+        MH_UPSAMPLE2X(m13_cv2_out,up,128u,18u,32u);
         float *cat = (float *)(base + SCR_M15_CONCAT);
-        H0_RUN(concat_c_chw(up,128u,c2f_m4,64u,cat,36u,64u), cat, ((128u)+(64u))*(36u)*(64u)*sizeof(float));
+        MH_CONCAT2(up,128u,c2f_m4,64u,cat,36u,64u);
 
         /* m.16: C2f without shortcut.  cv1: 192 -> 64; split into y0(32)+y1(32);
          * m.0: 32 -> 32, 32 -> 32; concat [y0,y1,m0_cv2] = 96; cv2: 96 -> 64. */
@@ -546,7 +560,7 @@ int main(uintptr_t arg_area)
         CONV_3x3_S2_P1_VPU(p3_out, down, WP(WR_model_17_conv_Conv_W), WP(WR_model_17_conv_Conv_B),
                            64u, 36u, 64u, 64u, 18u, 32u, 1u);
         float *cat = (float *)(base + SCR_M18_CONCAT);
-        H0_RUN(concat_c_chw(down,64u,m13_cv2_out,128u,cat,18u,32u), cat, ((64u)+(128u))*(18u)*(32u)*sizeof(float));
+        MH_CONCAT2(down,64u,m13_cv2_out,128u,cat,18u,32u);
 
         /* m.19: C2f w/o shortcut.  cv1 192->128; split 64+64; m.0 64->64, 64->64; concat 192->cv2 128. */
         float *cv1 = (float *)(base + SCR_M19_CV1);
@@ -576,7 +590,7 @@ int main(uintptr_t arg_area)
                        128u, 18u, 32u, 9u, 16u, 3u, 3u, 2u, 2u, 1u, 1u, 0u);
 
         float *cat = (float *)(base + SCR_M21_CONCAT);
-        H0_RUN(concat_c_chw(down,128u,psa_out,256u,cat,9u,16u), cat, ((128u)+(256u))*(9u)*(16u)*sizeof(float));
+        MH_CONCAT2(down,128u,psa_out,256u,cat,9u,16u);
 
         /* m.22: C2fCIB block.
          *   cv1 384->256 (1x1+SiLU); split 128+128 (y0, y1)
@@ -753,21 +767,25 @@ int main(uintptr_t arg_area)
      *   uint32 count N
      *   then N x { uint32 class_id; float score; float x1,y1,x2,y2; }
      */
-    if (is_h0) {
-        const float CONF_THRESH = 0.25f;
-        const float IOU_THRESH  = 0.5f;
-        /* Step 1: scan anchors, keep those with max-class-prob >= CONF_THRESH.
-         * Build candidate list in scratch (use `tb`, plenty of space). */
-        struct __attribute__((packed)) Cand {
-            uint32_t class_id;
-            float    score;
-            float    x1, y1, x2, y2;
-            uint8_t  alive;
-            uint8_t  pad[3];
-        };
-        struct Cand *cands = (struct Cand *)tb;   /* up to 3024 candidates */
-        uint32_t n_cands = 0;
-        for (uint32_t a = 0; a < 3024u; a++) {
+    struct __attribute__((packed)) Cand {
+        uint32_t class_id;
+        float    score;
+        float    x1, y1, x2, y2;
+        uint8_t  alive;
+        uint8_t  pad[3];
+    };
+    /* 3024 / 8 harts = 378 exactly, an exact per-hart bound. */
+    #define POST_MAX_CANDS_PER_HART 378u
+    struct Cand *cands = (struct Cand *)tb;
+    uint32_t *hart_counts = (uint32_t *)tc;
+
+    if (yolo_is_compute(hid)) {
+        const uint32_t cidx = yolo_compute_idx(hid);
+        const uint32_t a_lo = (3024u * cidx) / 8u;
+        const uint32_t a_hi = (3024u * (cidx + 1u)) / 8u;
+        struct Cand *my_cands = cands + cidx * POST_MAX_CANDS_PER_HART;
+        uint32_t my_count = 0;
+        for (uint32_t a = a_lo; a < a_hi; a++) {
             float best_logit = -1e9f;
             uint32_t best_cls = 0;
             for (uint32_t c = 0; c < 80u; c++) {
@@ -781,14 +799,38 @@ int main(uintptr_t arg_area)
             const float cy = final_out[1u * 3024u + a];
             const float bw = final_out[2u * 3024u + a];
             const float bh = final_out[3u * 3024u + a];
-            cands[n_cands].class_id = best_cls;
-            cands[n_cands].score    = best_score;
-            cands[n_cands].x1 = cx - 0.5f * bw;
-            cands[n_cands].y1 = cy - 0.5f * bh;
-            cands[n_cands].x2 = cx + 0.5f * bw;
-            cands[n_cands].y2 = cy + 0.5f * bh;
-            cands[n_cands].alive = 1u;
-            n_cands++;
+            my_cands[my_count].class_id = best_cls;
+            my_cands[my_count].score    = best_score;
+            my_cands[my_count].x1 = cx - 0.5f * bw;
+            my_cands[my_count].y1 = cy - 0.5f * bh;
+            my_cands[my_count].x2 = cx + 0.5f * bw;
+            my_cands[my_count].y2 = cy + 0.5f * bh;
+            my_cands[my_count].alive = 1u;
+            my_count++;
+        }
+        hart_counts[cidx * 16u] = my_count;
+        if (my_count > 0) evict((const void *)my_cands, my_count * sizeof(struct Cand));
+        evict((const void *)&hart_counts[cidx * 16u], sizeof(uint32_t));
+        WAIT_CACHEOPS; FENCE;
+    }
+    MH_BARRIER();
+
+    if (is_h0) {
+        const float IOU_THRESH  = 0.5f;
+        uint32_t n_cands = hart_counts[0];
+        for (uint32_t h = 1; h < 8u; h++) {
+            struct Cand *src = cands + h * POST_MAX_CANDS_PER_HART;
+            const uint32_t cnt = hart_counts[h * 16u];
+            for (uint32_t i = 0; i < cnt; i++) {
+                cands[n_cands + i].class_id = src[i].class_id;
+                cands[n_cands + i].score    = src[i].score;
+                cands[n_cands + i].x1       = src[i].x1;
+                cands[n_cands + i].y1       = src[i].y1;
+                cands[n_cands + i].x2       = src[i].x2;
+                cands[n_cands + i].y2       = src[i].y2;
+                cands[n_cands + i].alive    = src[i].alive;
+            }
+            n_cands += cnt;
         }
 
         /* Step 2: simple class-aware NMS (O(n^2), n ~ 100 at most). */
