@@ -1,0 +1,29 @@
+{
+  "model": "smolvlm2_500m_video",
+  "metric": "pmc_cycles",
+  "lower_is_better": true,
+  "updated_at": "2026-07-13T16:00:06.893451+00:00",
+  "entries": [
+    {
+      "team": "CI",
+      "variant": "SmolVLM2-500M-Video-Instruct",
+      "kernel_wait_s": null,
+      "kernel_wait_per_image_s": null,
+      "tokens_per_second": 13.893906132770168,
+      "prompt_tokens_per_second": null,
+      "prompt_tokens": null,
+      "completion_tokens": null,
+      "total_tokens": null,
+      "perplexity": 22.2825,
+      "perplexity_error": 4.80085,
+      "perplexity_tokens": 512,
+      "perplexity_prompt_tokens_per_second": null,
+      "validation_contract_sha256": "3dc72496006532eccf0c45c0400ad07b5e9655b15e1b15e644b26de064b4db56",
+      "sha": "443e451c6e6be082d53de6907707fe670f7c97d6",
+      "ref": "refs/heads/main",
+      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29263753097",
+      "scored_at": "2026-07-13T15:59:15.943861+00:00",
+      "pmc_cycles": 10821492678
+    }
+  ]
+}
