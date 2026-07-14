@@ -154,11 +154,9 @@ int main(uintptr_t arg_area)
      * silently tolerated: tensor_can_handle() checks get_l1d_mode()
      * itself and falls through to the existing VPU path if SCP never
      * came up on this hart. */
-#if 0
     if (mh_is_t0(hid)) {
         (void)tensor_scp_enable();
     }
-#endif
 
     uint8_t *base = (uint8_t *)buffer_base_from_args(arg_area);
     mh_init_barrier(base);

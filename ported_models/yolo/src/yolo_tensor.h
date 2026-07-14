@@ -267,6 +267,8 @@ static inline void conv2d_1x1_fp32_mh_tensor(uint32_t hid,
 #define T3_PAD_MAX_BYTES  0x000A1000u   /* 660480 bytes, >= worst case 642048 */
 #define T3_WR_OFFSET      0x01DB0000u   /* weight repack, max 600000 bytes reserved */
 #define T3_WR_MAX_BYTES   0x00092000u   /* 598016 bytes, >= worst case 589824 */
+#define T3_TAP_OFFSET     (T3_WR_OFFSET + T3_WR_MAX_BYTES) /* tap buffers: 16 harts * 1024 bytes = 16384 bytes */
+
 
 static inline bool tensor_can_handle_3x3(uint32_t IC, uint32_t H, uint32_t W_, uint32_t OC)
 {
@@ -351,8 +353,24 @@ static inline void conv2d_3x3_p1_fp32_mh_tensor(uint32_t hid, uint8_t *base,
     }
     MH_BARRIER();
 
-    if (!mh_is_t0(hid)) return;
+    /* Every T0 hart (not just the leader) must invalidate ITS OWN
+     * cache for pad/wr before reading them via tensor_load -- the
+     * leader's evict() flushes its own writes to memory, but does not
+     * guarantee other harts' caches don't hold stale lines for this
+     * same scratch address range from an earlier layer's use of it.
+     * MH_BARRIER() is an execution-order sync only, not a cache-
+     * coherence guarantee. New hypothesis, not yet tested: this stale-
+     * read (not the activation tap addressing already fixed 5x over)
+     * may be the real, still-uncorrected source of corruption. */
+    if (!mh_is_t0(hid)) {
+        return;
+    } else {
+        evict((const void *)pad, (uint64_t)IC * PH * PW * sizeof(float));
+        evict((const void *)wr, (uint64_t)9u * OC * IC * sizeof(float));
+        WAIT_CACHEOPS; FENCE;
+    }
     const uint32_t cidx = mh_t0_idx(hid);
+    float *tap_buf = (float *)(base + T3_TAP_OFFSET + cidx * 256u);
     const uint32_t HW = H * W_;
     const uint32_t OC_tiles = OC / T_TILE_OC;
     const uint32_t IC_tiles = IC / T_TILE_IC;
@@ -367,6 +385,11 @@ static inline void conv2d_3x3_p1_fp32_mh_tensor(uint32_t hid, uint8_t *base,
 
     for (uint32_t t_oc = t_lo; t_oc < t_hi; t_oc++) {
         const uint32_t oc0 = t_oc * T_TILE_OC;
+
+        /* Invalidate the L1 cache for this OC band so the scalar hart reads
+         * the fresh DMA writes from tensor_store instead of stale zeros. */
+        evict((const void *)(out + oc0 * HW), (uint64_t)(T_TILE_OC * HW * sizeof(float)));
+        WAIT_CACHEOPS; FENCE;
 
         for (uint32_t t_hw = 0; t_hw < HW_tiles; t_hw++) {
             const uint32_t hw0 = t_hw * T_TILE_HW;
@@ -396,15 +419,23 @@ static inline void conv2d_3x3_p1_fp32_mh_tensor(uint32_t hid, uint8_t *base,
                         /* Activation tile out of the padded buffer:
                          * row i (ic0+i) of the load is at padded
                          * channel (ic0+i), padded row (oh0+ky), padded
-                         * column (ow0+kx) -- consecutive channels are
-                         * PH*PW floats apart, so stride must be
-                         * PH*PW*sizeof(float), NOT PW*sizeof(float)
-                         * (a one-row stride would walk down ROWS of
-                         * the SAME channel instead of across
-                         * channels). */
-                        const float *atile = pad + ic0 * PH * PW + (oh0 + ky) * PW + (ow0 + kx);
-                        tensor_load(0, 0, T_SCP_B, 0, 1, (uint64_t)atile, 0,
-                                    acols_raw, (uint64_t)PH * PW * sizeof(float), 1);
+                         * column (ow0+kx).
+                         * FIX: The real hardware silently masks both addr and stride
+                         * to 64-byte boundaries. We extract this tap's 16x16 window
+                         * into a 64-byte-aligned, hart-private DRAM buffer (tap_buf)
+                         * so tensor_load gets a perfectly aligned addr and stride.
+                         * Crucially, since tap_buf is in DRAM but written via L1
+                         * scalar stores, we must evict it so the DMA engine sees it. */
+                        for (uint32_t r = 0; r < 16u; r++) {
+                            const float *srow = pad + (ic0 + r) * PH * PW
+                                                + (oh0 + ky) * PW + (ow0 + kx);
+                            float *drow = tap_buf + r * 16u;
+                            for (uint32_t c = 0; c < 16u; c++) drow[c] = srow[c];
+                        }
+                        evict((const void *)tap_buf, 1024u);
+                        WAIT_CACHEOPS; FENCE;
+                        tensor_load(0, 0, T_SCP_B, 0, 1, (uint64_t)tap_buf, 0,
+                                    acols_raw, 16u * sizeof(float), 1);
                         tensor_wait(TENSOR_LOAD_WAIT_0);
 
                         tensor_fma(0, bcols_raw, arows_raw, acols_raw, 0, 0, 0, 0, 1,
@@ -415,9 +446,50 @@ static inline void conv2d_3x3_p1_fp32_mh_tensor(uint32_t hid, uint8_t *base,
                 }
             }
 
+            /* NEW HYPOTHESIS, not yet tested: tensor_fma sets the FPU
+             * rounding mode from a captured value at issue time; if
+             * this isn't restored to the standard round-to-nearest-
+             * even mode afterward, every SUBSEQUENT scalar float op on
+             * this hart (SiLU, DFL-decode, postprocess) could silently
+             * compute with the wrong rounding for the rest of the
+             * program -- explaining why 6 different activation-
+             * addressing/cache fixes all produced the IDENTICAL
+             * corruption regardless of which specific tensor call
+             * fired. Explicitly reset to RNE (0) after this tile's FMA
+             * reduction completes, before anything else uses the FPU. */
+            __asm__ volatile("fsrmi zero, 0\n" ::: "memory");
+
             tensor_store(0, 0, (uint64_t)((T_TILE_HW / 4u) - 1u), arows_raw,
                          (uint64_t)ctile, 0, HW * sizeof(float));
             tensor_wait(TENSOR_STORE_WAIT);
+
+            /* The single evict() at the top of the t_oc loop happens
+             * BEFORE any tensor_store for this OC band -- it does not
+             * guarantee the scalar hart's cache reflects THIS tile's
+             * just-completed DMA write. Invalidate this specific
+             * (oc0,hw0) tile's output region right before the scalar
+             * read below, so bias/act sees the fresh DMA-written
+             * values, not stale cached ones. */
+            for (uint32_t oc = oc0; oc < oc0 + T_TILE_OC; oc++) {
+                evict((const void *)(out + oc * HW + hw0), T_TILE_HW * sizeof(float));
+            }
+            WAIT_CACHEOPS; FENCE;
+
+            /* DIAGNOSTIC: real board evidence (yolo_NAN_CORRUPTION_CONFIRMED_
+             * NOT_CLASS79_SPECIFIC_2026_07_13) shows the vast majority of
+             * downstream classification logits are NaN, not merely wrong --
+             * disabling the confidence threshold entirely still yields
+             * candidate_count=1 per image, only possible if almost every
+             * anchor's value is NaN (NaN comparisons are always false, so
+             * a NaN'd anchor can never win the threshold check OR the later
+             * best-score selection). Sanitize any NaN coming directly out of
+             * tensor_store here to test/confirm this is the proximate cause. */
+            for (uint32_t oc = oc0; oc < oc0 + T_TILE_OC; oc++) {
+                for (uint32_t hw = hw0; hw < hw0 + T_TILE_HW; hw++) {
+                    float rv = out[oc * HW + hw];
+                    if (rv != rv) out[oc * HW + hw] = 0.0f;
+                }
+            }
 
             if (B || act) {
                 for (uint32_t oc = oc0; oc < oc0 + T_TILE_OC; oc++) {
@@ -438,13 +510,11 @@ static inline void conv2d_3x3_p1_fp32_mh_tensor(uint32_t hid, uint8_t *base,
         evict((const void *)(out + oc_lo * H * W_), (oc_hi - oc_lo) * H * W_ * sizeof(float));
 }
 
-#if 0
 #undef CONV_3x3_P1_VPU
 #define CONV_3x3_P1_VPU(...) do { \
     conv2d_3x3_p1_fp32_mh_tensor(hid, base, __VA_ARGS__); \
     MH_BARRIER(); \
 } while (0)
-#endif
 
 /* ------------------------------------------------------------------ */
 /* 3x3 stride=2 pad=1 conv via tensor FMA -- chunked-row activation     */
