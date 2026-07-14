@@ -51,6 +51,32 @@ static inline float silu(float x) {
     return x * fast_recip(1.0f + my_expf(-x));
 }
 
+/* Vectorized SiLU: x / (1 + exp(-x)), computed entirely on the VPU register,
+ * never touching memory. The depth-anything store-buffer hazard (see fence
+ * comments below) is specifically about a vector STORE followed by a scalar
+ * READ of the same address; this never does that -- it stays in registers
+ * from accumulator to final single fsq2 store, so the hazard does not apply. */
+static inline float vsilu_ps(float x) {
+    union { float f; uint32_t u; } _z; _z.f = 0.0f;
+    union { float f; uint32_t u; } _o; _o.f = 1.0f;
+    union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f; /* log2(e) */
+    float z, o, l2e, t;
+    __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(z) : "r"((uint64_t)_z.u));
+    __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(o) : "r"((uint64_t)_o.u));
+    __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(l2e) : "r"((uint64_t)_l.u));
+    __asm__ volatile(
+        "fsub.ps %[t], %[z], %[x]\n"
+        "fmul.ps %[t], %[t], %[l2e]\n"
+        "fexp.ps %[t], %[t]\n"
+        "fadd.ps %[t], %[t], %[o]\n"
+        "frcp.ps %[t], %[t]\n"
+        "fmul.ps %[t], %[t], %[x]\n"
+        : [t] "=&f"(t)
+        : [x] "f"(x), [z] "f"(z), [o] "f"(o), [l2e] "f"(l2e)
+    );
+    return t;
+}
+
 static inline uintptr_t buffer_base_from_args(uintptr_t arg_area)
 {
     if (arg_area == 0u || arg_area == ~(uintptr_t)0u)
@@ -65,8 +91,8 @@ static inline uintptr_t buffer_base_from_args(uintptr_t arg_area)
  *   ACT=0  none
  *   ACT=1  SiLU
  */
-static void conv2d_fp32(const float *in, float *out,
-                        const float *W, const float *B,
+static void conv2d_fp32(const float * __restrict__ in, float * __restrict__ out,
+                        const float * __restrict__ W, const float * __restrict__ B,
                         uint32_t IC, uint32_t IH, uint32_t IW,
                         uint32_t OC, uint32_t OH, uint32_t OW,
                         uint32_t KH, uint32_t KW,
@@ -108,8 +134,8 @@ static void conv2d_fp32(const float *in, float *out,
 }
 
 /* Depthwise conv: groups == IC == OC, filter shape [OC, 1, KH, KW]. */
-static void conv2d_dw_fp32(const float *in, float *out,
-                           const float *W, const float *B,
+static void conv2d_dw_fp32(const float * __restrict__ in, float * __restrict__ out,
+                           const float * __restrict__ W, const float * __restrict__ B,
                            uint32_t C, uint32_t IH, uint32_t IW,
                            uint32_t OH, uint32_t OW,
                            uint32_t KH, uint32_t KW,
@@ -169,7 +195,7 @@ static inline void split_c_chw(const float *in, uint32_t Cin,
 }
 
 /* MaxPool 2D NCHW. */
-static void maxpool_fp32(const float *in, float *out,
+static void maxpool_fp32(const float * __restrict__ in, float * __restrict__ out,
                          uint32_t C, uint32_t IH, uint32_t IW,
                          uint32_t OH, uint32_t OW,
                          uint32_t KH, uint32_t KW,
@@ -286,7 +312,7 @@ static inline void     mh_init_barrier(uint8_t *base) { (void)base; }
 
 /* Convenience macros: auto-barrier after each multi-hart conv. */
 #define CONV_MH(...)    do { conv2d_fp32_mh(hid, __VA_ARGS__);    MH_BARRIER(); } while (0)
-#define CONV_DW_MH(...) do { conv2d_dw_disp(hid, __VA_ARGS__); MH_BARRIER(); } while (0)
+#define CONV_DW_MH(...) do { conv2d_dw_fp32_mh(hid, __VA_ARGS__); MH_BARRIER(); } while (0)
 
 /* Hart-0 only block: STMT runs on hart 0; eviction + barrier follow. */
 #define H0_RUN(STMT, ADDR, BYTES) do { \
@@ -300,7 +326,7 @@ static inline void     mh_init_barrier(uint8_t *base) { (void)base; }
 
 /* Range slice: hart `t0_idx` (in 0..MH_NUM_T0) gets [lo, hi) of [0..N).
  * Uniform partition; remainder distributed to lowest indices. */
-static inline void mh_range(uint32_t N, uint32_t t0_idx,
+static inline __attribute__((always_inline)) void mh_range(uint32_t N, uint32_t t0_idx,
                             uint32_t *lo, uint32_t *hi)
 {
     *lo = (N * t0_idx) / MH_NUM_T0;
@@ -326,16 +352,6 @@ static inline uint32_t yolo_compute_idx(uint32_t hid) { return mh_t0_idx(hid); }
 static inline int      yolo_is_compute(uint32_t hid) { return mh_is_t0(hid); }
 #endif
 
-/* VPU conv hart-scope: T0-only (8 harts; matches upstream, verified correct
- * on board, tp=18/18). The 3x3-OC4 conv below broadcasts its 4 weights into
- * distinct vector registers up front instead of reusing one broadcast
- * register immediately before its fmadd — a verified win (kernel_wait_s
- * 3.322944 -> 2.9576, T0-only) since 4 independent fbcx broadcasts pipeline
- * better than an fbcx/fmadd/fbcx/fmadd dependency chain. */
-#define VPU_ACTIVE(hid)  (mh_is_t0(hid))
-#define VPU_IDX(hid)     (mh_t0_idx(hid))
-#define VPU_N            MH_NUM_T0
-
 static inline void yolo_range(uint32_t N, uint32_t idx,
                               uint32_t *lo, uint32_t *hi)
 {
@@ -344,8 +360,8 @@ static inline void yolo_range(uint32_t N, uint32_t idx,
 }
 
 static void conv2d_fp32_mh(uint32_t hid,
-                           const float *in, float *out,
-                           const float *W, const float *B,
+                           const float * __restrict__ in, float * __restrict__ out,
+                           const float * __restrict__ W, const float * __restrict__ B,
                            uint32_t IC, uint32_t IH, uint32_t IW,
                            uint32_t OC, uint32_t OH, uint32_t OW,
                            uint32_t KH, uint32_t KW,
@@ -406,39 +422,28 @@ static void conv2d_fp32_mh(uint32_t hid,
  * all our YOLO 1x1 convs since OW in {16, 32, 64, 128, 256}).
  */
 static void conv2d_1x1_fp32_mh_vpu(uint32_t hid,
-                                   const float *in, float *out,
-                                   const float *W, const float *B,
+                                   const float * __restrict__ in, float * __restrict__ out,
+                                   const float * __restrict__ W, const float * __restrict__ B,
                                    uint32_t IC, uint32_t H, uint32_t W_,
                                    uint32_t OC,
                                    uint32_t act)
 {
     /* VPU lives only on even (T0) harts.  Odd harts idle and just hit the
      * outer barrier afterwards. */
-    if (!VPU_ACTIVE(hid)) return;
-    const uint32_t cidx = VPU_IDX(hid);
+    if (!mh_is_t0(hid)) return;
+    const uint32_t cidx = mh_t0_idx(hid);
     uint32_t oc_lo, oc_hi;
-    *(volatile uint32_t *)&oc_lo = (OC * cidx) / VPU_N;
-    *(volatile uint32_t *)&oc_hi = (OC * (cidx + 1u)) / VPU_N;
+    *(volatile uint32_t *)&oc_lo = (OC * cidx) / MH_NUM_T0;
+    *(volatile uint32_t *)&oc_hi = (OC * (cidx + 1u)) / MH_NUM_T0;
 
     float acc_buf[8] __attribute__((aligned(32)));
-
-    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
-    float vsilu_zero, vsilu_one, vsilu_log2e;
-    {
-        union { float f; uint32_t u; } _z; _z.f = 0.0f;
-        union { float f; uint32_t u; } _o; _o.f = 1.0f;
-        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
-    }
 
     for (uint32_t oc = oc_lo; oc < oc_hi; oc++) {
         const float bias_v = B[oc];
         union { float f; uint32_t u; } bb; bb.f = bias_v;
         for (uint32_t oh = 0; oh < H; oh++) {
             for (uint32_t ow8 = 0; ow8 < W_; ow8 += 8u) {
-                register float acc asm("f0");
+                float acc;
                 __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(acc) : "r"((uint64_t)bb.u));
                 for (uint32_t ic = 0; ic < IC; ic++) {
                     const float w_scalar = W[oc * IC + ic];
@@ -453,17 +458,7 @@ static void conv2d_1x1_fp32_mh_vpu(uint32_t hid,
                 }
                 float *dst = out + (oc * H + oh) * W_ + ow8;
                 if (act == 1u) {
-                    float _t;
-                    __asm__ volatile(
-                        "fsub.ps %[t], %[z], %[x]\n"
-                        "fmul.ps %[t], %[t], %[l2e]\n"
-                        "fexp.ps %[t], %[t]\n"
-                        "fadd.ps %[t], %[t], %[o]\n"
-                        "frcp.ps %[t], %[t]\n"
-                        "fmul.ps %[t], %[t], %[x]\n"
-                        : [t] "=&f"(_t)
-                        : [x] "f"(acc), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e)
-                    );
+                    float _t = vsilu_ps(acc);
                     __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory");
                 } else {
                     __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(acc) : "memory");
@@ -485,40 +480,29 @@ static void conv2d_1x1_fp32_mh_vpu(uint32_t hid,
  *
  * Constraints: OC % 8 == 0, OW % 8 == 0. */
 static void conv2d_1x1_fp32_mh_vpu_oc8(uint32_t hid,
-                                       const float *in, float *out,
-                                       const float *WR, const float *B,
+                                       const float * __restrict__ in, float * __restrict__ out,
+                                       const float * __restrict__ W, const float * __restrict__ B,
                                        uint32_t IC, uint32_t H, uint32_t W_,
                                        uint32_t OC,
                                        uint32_t act)
 {
-    if (!VPU_ACTIVE(hid)) return;
-    const uint32_t cidx = VPU_IDX(hid);
+    if (!mh_is_t0(hid)) return;
+    const uint32_t cidx = mh_t0_idx(hid);
     /* Slice OC by groups of 8 (whole tile). */
     const uint32_t oc_tiles = OC / 8u;
     uint32_t tile_lo, tile_hi;
-    *(volatile uint32_t *)&tile_lo = (oc_tiles * cidx) / VPU_N;
-    *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / VPU_N;
+    *(volatile uint32_t *)&tile_lo = (oc_tiles * cidx) / MH_NUM_T0;
+    *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / MH_NUM_T0;
 
     float acc_buf[8] __attribute__((aligned(32)));
-
-    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
-    float vsilu_zero, vsilu_one, vsilu_log2e;
-    {
-        union { float f; uint32_t u; } _z; _z.f = 0.0f;
-        union { float f; uint32_t u; } _o; _o.f = 1.0f;
-        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
-    }
 
     for (uint32_t tile = tile_lo; tile < tile_hi; tile++) {
         const uint32_t oc0 = tile * 8u;
         for (uint32_t oh = 0; oh < H; oh++) {
             for (uint32_t ow8 = 0; ow8 < W_; ow8 += 8u) {
                 /* 8 accumulators, one per OC lane in this tile. */
-                register float a0 asm("f0"), a1 asm("f1"), a2 asm("f2"), a3 asm("f3");
-                register float a4 asm("f4"), a5 asm("f5"), a6 asm("f6"), a7 asm("f7");
+                float a0, a1, a2, a3;
+                float a4, a5, a6, a7;
                 /* Initialize each to bias broadcast. */
 #define INIT_ACC(REG, OC_OFFSET) do { \
     union { float f; uint32_t u; } _bb; _bb.f = B[oc0 + OC_OFFSET]; \
@@ -534,15 +518,14 @@ static void conv2d_1x1_fp32_mh_vpu_oc8(uint32_t hid,
                     register float w4 asm("f24"), w5 asm("f25"), w6 asm("f26"), w7 asm("f27");
                     const float *src = in + (ic * H + oh) * W_ + ow8;
                     
-                    const float *wr8 = WR + (tile * IC + ic) * 8u;
-                    union { float f; uint32_t u; } w0_u; w0_u.f = wr8[0];
-                    union { float f; uint32_t u; } w1_u; w1_u.f = wr8[1];
-                    union { float f; uint32_t u; } w2_u; w2_u.f = wr8[2];
-                    union { float f; uint32_t u; } w3_u; w3_u.f = wr8[3];
-                    union { float f; uint32_t u; } w4_u; w4_u.f = wr8[4];
-                    union { float f; uint32_t u; } w5_u; w5_u.f = wr8[5];
-                    union { float f; uint32_t u; } w6_u; w6_u.f = wr8[6];
-                    union { float f; uint32_t u; } w7_u; w7_u.f = wr8[7];
+                    union { float f; uint32_t u; } w0_u; w0_u.f = W[(oc0 + 0) * IC + ic];
+                    union { float f; uint32_t u; } w1_u; w1_u.f = W[(oc0 + 1) * IC + ic];
+                    union { float f; uint32_t u; } w2_u; w2_u.f = W[(oc0 + 2) * IC + ic];
+                    union { float f; uint32_t u; } w3_u; w3_u.f = W[(oc0 + 3) * IC + ic];
+                    union { float f; uint32_t u; } w4_u; w4_u.f = W[(oc0 + 4) * IC + ic];
+                    union { float f; uint32_t u; } w5_u; w5_u.f = W[(oc0 + 5) * IC + ic];
+                    union { float f; uint32_t u; } w6_u; w6_u.f = W[(oc0 + 6) * IC + ic];
+                    union { float f; uint32_t u; } w7_u; w7_u.f = W[(oc0 + 7) * IC + ic];
                     
                     __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v_pkg) : "r"(src));
                     
@@ -569,17 +552,7 @@ static void conv2d_1x1_fp32_mh_vpu_oc8(uint32_t hid,
 #define STORE_ACC(REG, OC_OFFSET) do { \
     float *dst = out + ((oc0 + OC_OFFSET) * H + oh) * W_ + ow8; \
     if (act == 1u) { \
-        float _t; \
-        __asm__ volatile( \
-            "fsub.ps %[t], %[z], %[x]\n" \
-            "fmul.ps %[t], %[t], %[l2e]\n" \
-            "fexp.ps %[t], %[t]\n" \
-            "fadd.ps %[t], %[t], %[o]\n" \
-            "frcp.ps %[t], %[t]\n" \
-            "fmul.ps %[t], %[t], %[x]\n" \
-            : [t] "=&f"(_t) \
-            : [x] "f"(REG), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e) \
-        ); \
+        float _t = vsilu_ps(REG); \
         __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory"); \
     } else { \
         __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(REG) : "memory"); \
@@ -603,40 +576,29 @@ static void conv2d_1x1_fp32_mh_vpu_oc8(uint32_t hid,
 /* OC16-blocked 1x1: 16 accumulators in f0..f15.  Needs OC % 16 == 0
  * AND OC large enough for all 8 T0 harts to get at least one tile (OC>=128). */
 static void conv2d_1x1_fp32_mh_vpu_oc16(uint32_t hid,
-                                        const float *in, float *out,
-                                        const float *WR, const float *B,
+                                        const float * __restrict__ in, float * __restrict__ out,
+                                        const float * __restrict__ W, const float * __restrict__ B,
                                         uint32_t IC, uint32_t H, uint32_t W_,
                                         uint32_t OC,
                                         uint32_t act)
 {
-    if (!VPU_ACTIVE(hid)) return;
-    const uint32_t cidx = VPU_IDX(hid);
+    if (!mh_is_t0(hid)) return;
+    const uint32_t cidx = mh_t0_idx(hid);
     const uint32_t oc_tiles = OC / 16u;
     uint32_t tile_lo, tile_hi;
-    *(volatile uint32_t *)&tile_lo = (oc_tiles * cidx) / VPU_N;
-    *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / VPU_N;
+    *(volatile uint32_t *)&tile_lo = (oc_tiles * cidx) / MH_NUM_T0;
+    *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / MH_NUM_T0;
 
     float acc_buf[8] __attribute__((aligned(32)));
-
-    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
-    float vsilu_zero, vsilu_one, vsilu_log2e;
-    {
-        union { float f; uint32_t u; } _z; _z.f = 0.0f;
-        union { float f; uint32_t u; } _o; _o.f = 1.0f;
-        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
-    }
 
     for (uint32_t tile = tile_lo; tile < tile_hi; tile++) {
         const uint32_t oc0 = tile * 16u;
         for (uint32_t oh = 0; oh < H; oh++) {
             for (uint32_t ow8 = 0; ow8 < W_; ow8 += 8u) {
-                register float a0 asm("f0"), a1 asm("f1"), a2 asm("f2"), a3 asm("f3");
-                register float a4 asm("f4"), a5 asm("f5"), a6 asm("f6"), a7 asm("f7");
-                register float a8 asm("f10"),a9 asm("f11"),aA asm("f12"),aB asm("f13");
-                register float aC asm("f14"),aD asm("f15"),aE asm("f16"),aF asm("f17");
+                float a0, a1, a2, a3;
+                float a4, a5, a6, a7;
+                float a8, a9, aA, aB;
+                float aC, aD, aE, aF;
 #define INIT_ACC(REG, OO) do { \
     union { float f; uint32_t u; } _bb; _bb.f = B[oc0 + OO]; \
     __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(REG) : "r"((uint64_t)_bb.u)); \
@@ -656,15 +618,14 @@ static void conv2d_1x1_fp32_mh_vpu_oc16(uint32_t hid,
                     __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v_pkg) : "r"(src));
                     
                     // Batch 1 (0-7)
-                    const float *wr16 = WR + (tile * IC + ic) * 16u;
-                    union { float f; uint32_t u; } w0_u; w0_u.f = wr16[0];
-                    union { float f; uint32_t u; } w1_u; w1_u.f = wr16[1];
-                    union { float f; uint32_t u; } w2_u; w2_u.f = wr16[2];
-                    union { float f; uint32_t u; } w3_u; w3_u.f = wr16[3];
-                    union { float f; uint32_t u; } w4_u; w4_u.f = wr16[4];
-                    union { float f; uint32_t u; } w5_u; w5_u.f = wr16[5];
-                    union { float f; uint32_t u; } w6_u; w6_u.f = wr16[6];
-                    union { float f; uint32_t u; } w7_u; w7_u.f = wr16[7];
+                    union { float f; uint32_t u; } w0_u; w0_u.f = W[(oc0 + 0) * IC + ic];
+                    union { float f; uint32_t u; } w1_u; w1_u.f = W[(oc0 + 1) * IC + ic];
+                    union { float f; uint32_t u; } w2_u; w2_u.f = W[(oc0 + 2) * IC + ic];
+                    union { float f; uint32_t u; } w3_u; w3_u.f = W[(oc0 + 3) * IC + ic];
+                    union { float f; uint32_t u; } w4_u; w4_u.f = W[(oc0 + 4) * IC + ic];
+                    union { float f; uint32_t u; } w5_u; w5_u.f = W[(oc0 + 5) * IC + ic];
+                    union { float f; uint32_t u; } w6_u; w6_u.f = W[(oc0 + 6) * IC + ic];
+                    union { float f; uint32_t u; } w7_u; w7_u.f = W[(oc0 + 7) * IC + ic];
                     
                     __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(w0) : "r"((uint64_t)w0_u.u));
                     __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(w1) : "r"((uint64_t)w1_u.u));
@@ -685,14 +646,14 @@ static void conv2d_1x1_fp32_mh_vpu_oc16(uint32_t hid,
                     __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a7) : "f"(v_pkg), "f"(w7));
 
                     // Batch 2 (8-15)
-                    w0_u.f = wr16[8];
-                    w1_u.f = wr16[9];
-                    w2_u.f = wr16[10];
-                    w3_u.f = wr16[11];
-                    w4_u.f = wr16[12];
-                    w5_u.f = wr16[13];
-                    w6_u.f = wr16[14];
-                    w7_u.f = wr16[15];
+                    w0_u.f = W[(oc0 + 8) * IC + ic];
+                    w1_u.f = W[(oc0 + 9) * IC + ic];
+                    w2_u.f = W[(oc0 + 10) * IC + ic];
+                    w3_u.f = W[(oc0 + 11) * IC + ic];
+                    w4_u.f = W[(oc0 + 12) * IC + ic];
+                    w5_u.f = W[(oc0 + 13) * IC + ic];
+                    w6_u.f = W[(oc0 + 14) * IC + ic];
+                    w7_u.f = W[(oc0 + 15) * IC + ic];
                     
                     __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(w0) : "r"((uint64_t)w0_u.u));
                     __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(w1) : "r"((uint64_t)w1_u.u));
@@ -716,17 +677,7 @@ static void conv2d_1x1_fp32_mh_vpu_oc16(uint32_t hid,
 #define STORE_ACC(REG, OO) do { \
     float *dst = out + ((oc0 + OO) * H + oh) * W_ + ow8; \
     if (act == 1u) { \
-        float _t; \
-        __asm__ volatile( \
-            "fsub.ps %[t], %[z], %[x]\n" \
-            "fmul.ps %[t], %[t], %[l2e]\n" \
-            "fexp.ps %[t], %[t]\n" \
-            "fadd.ps %[t], %[t], %[o]\n" \
-            "frcp.ps %[t], %[t]\n" \
-            "fmul.ps %[t], %[t], %[x]\n" \
-            : [t] "=&f"(_t) \
-            : [x] "f"(REG), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e) \
-        ); \
+        float _t = vsilu_ps(REG); \
         __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory"); \
     } else { \
         __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(REG) : "memory"); \
@@ -748,95 +699,37 @@ static void conv2d_1x1_fp32_mh_vpu_oc16(uint32_t hid,
 }
 
 /* Dispatcher: OC>=128 -> OC16, OC>=64 -> OC8, else per-OC. */
-/* Repack (OC,IC)-major 1x1 weights into (tile,IC,TILE)-major so a tile's
- * TILE (8 or 16) weights for a fixed ic are contiguous instead of IC*4
- * bytes apart. T0-only, same tile boundaries as the compute kernel. */
-static void repack_1x1_weights(uint32_t hid, const float *W, float *WR,
-                               uint32_t IC, uint32_t OC, uint32_t TILE)
-{
-    if (!mh_is_t0(hid)) return;
-    const uint32_t cidx = mh_t0_idx(hid);
-    const uint32_t oc_tiles = OC / TILE;
-    uint32_t tile_lo, tile_hi;
-    *(volatile uint32_t *)&tile_lo = (oc_tiles * cidx) / MH_NUM_T0;
-    *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / MH_NUM_T0;
-
-    for (uint32_t tile = tile_lo; tile < tile_hi; tile++) {
-        const uint32_t oc0 = tile * TILE;
-        float *dst_tile = WR + (uint64_t)tile * IC * TILE;
-        for (uint32_t ic = 0; ic < IC; ic++) {
-            float *dst = dst_tile + ic * TILE;
-            for (uint32_t o = 0; o < TILE; o++) dst[o] = W[(oc0 + o) * IC + ic];
-        }
-    }
-    if (tile_hi > tile_lo) {
-        const uint64_t bytes = (uint64_t)(tile_hi - tile_lo) * IC * TILE * sizeof(float);
-        evict((const void *)(WR + (uint64_t)tile_lo * IC * TILE), bytes);
-    }
-}
-
-/* Scratch for the repack above: max IC*OC across all CONV_1x1 OC8/OC16
- * layers in this model is IC=512,OC=256 -> 131072 floats (512 KB). Placed
- * right after the CONV_3x3_P1 repack scratch (WR3X3_SCRATCH_OFFSET +
- * WR3X3_SCRATCH_BYTES = 0x4E10000), leaving headroom before BUFFER_SIZE.
- * Uses base+offset addressing (board-verified faster here than a static
- * array). */
-#define WR1X1_SCRATCH_OFFSET (WR3X3_SCRATCH_OFFSET + WR3X3_SCRATCH_BYTES)
-#define WR1X1_SCRATCH_BYTES  (512u * 256u * 4u)
-
-static inline void conv2d_1x1_disp(uint32_t hid, float *wr_scratch,
-                                   const float *in, float *out,
-                                   const float *W, const float *B,
+static inline void conv2d_1x1_disp(uint32_t hid,
+                                   const float * __restrict__ in, float * __restrict__ out,
+                                   const float * __restrict__ W, const float * __restrict__ B,
                                    uint32_t IC, uint32_t H, uint32_t W_,
                                    uint32_t OC,
                                    uint32_t act)
 {
     /* Fixed OC16 RAW pipeline hazard! Safe to use for OC>=128 */
-    if (OC >= 128u) {
-        repack_1x1_weights(hid, W, wr_scratch, IC, OC, 16u);
-        MH_BARRIER();
-        conv2d_1x1_fp32_mh_vpu_oc16(hid, in, out, wr_scratch, B, IC, H, W_, OC, act);
-    } else if (OC >= 64u) {
-        repack_1x1_weights(hid, W, wr_scratch, IC, OC, 8u);
-        MH_BARRIER();
-        conv2d_1x1_fp32_mh_vpu_oc8(hid, in, out, wr_scratch, B, IC, H, W_, OC, act);
-    } else {
-        conv2d_1x1_fp32_mh_vpu(hid, in, out, W, B, IC, H, W_, OC, act);
-    }
+    if   (OC >= 128u) conv2d_1x1_fp32_mh_vpu_oc16(hid, in, out, W, B, IC, H, W_, OC, act);
+    else if(OC >= 64u)conv2d_1x1_fp32_mh_vpu_oc8 (hid, in, out, W, B, IC, H, W_, OC, act);
+    else              conv2d_1x1_fp32_mh_vpu    (hid, in, out, W, B, IC, H, W_, OC, act);
 }
-#define CONV_1x1(...) do { \
-    conv2d_1x1_disp(hid, (float *)(base + WR1X1_SCRATCH_OFFSET), __VA_ARGS__); \
-    MH_BARRIER(); \
-} while (0)
+#define CONV_1x1(...) do { conv2d_1x1_disp(hid, __VA_ARGS__); MH_BARRIER(); } while (0)
 
 /* VPU-vectorized 3x3 Conv2d (stride=1, pad=1, OW % 8 == 0).
  * Adapted from depth-anything M10 conv3x3_pad1_fp32_vpu, multi-hart by OC.
  */
 static void conv2d_3x3_p1_fp32_mh_vpu(uint32_t hid,
-                                      const float *in, float *out,
-                                      const float *W, const float *B,
+                                      const float * __restrict__ in, float * __restrict__ out,
+                                      const float * __restrict__ W, const float * __restrict__ B,
                                       uint32_t IC, uint32_t H, uint32_t W_,
                                       uint32_t OC,
                                       uint32_t act)
 {
-    if (!VPU_ACTIVE(hid)) return;
-    const uint32_t cidx = VPU_IDX(hid);
+    if (!mh_is_t0(hid)) return;
+    const uint32_t cidx = mh_t0_idx(hid);
     uint32_t oc_lo, oc_hi;
-    *(volatile uint32_t *)&oc_lo = (OC * cidx) / VPU_N;
-    *(volatile uint32_t *)&oc_hi = (OC * (cidx + 1u)) / VPU_N;
+    *(volatile uint32_t *)&oc_lo = (OC * cidx) / MH_NUM_T0;
+    *(volatile uint32_t *)&oc_hi = (OC * (cidx + 1u)) / MH_NUM_T0;
 
     float acc_buf[8] __attribute__((aligned(32)));
-
-    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
-    float vsilu_zero, vsilu_one, vsilu_log2e;
-    {
-        union { float f; uint32_t u; } _z; _z.f = 0.0f;
-        union { float f; uint32_t u; } _o; _o.f = 1.0f;
-        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
-    }
 
     for (uint32_t oc = oc_lo; oc < oc_hi; oc++) {
         const float bias_v = B[oc];
@@ -845,7 +738,7 @@ static void conv2d_3x3_p1_fp32_mh_vpu(uint32_t hid,
             int32_t is_h_edge = (oh == 0) || (oh == (int32_t)H - 1);
             for (int32_t ow8 = 0; ow8 < (int32_t)W_; ow8 += 8) {
                 int32_t is_w_edge = (ow8 == 0) || (ow8 + 8 > (int32_t)W_ - 1);
-                register float acc asm("f0");
+                float acc;
                 __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(acc) : "r"((uint64_t)bb.u));
 
                 if (!is_h_edge && !is_w_edge) {
@@ -900,19 +793,12 @@ static void conv2d_3x3_p1_fp32_mh_vpu(uint32_t hid,
                     }
                 }
 
+                /* Store, applying vectorized SiLU on-register (no scratch round-trip
+                 * needed here -- unlike the edge-case fence above, `acc` already
+                 * holds the final accumulated value at this point). */
                 float *dst = out + (oc * H + (uint32_t)oh) * W_ + (uint32_t)ow8;
                 if (act == 1u) {
-                    float _t;
-                    __asm__ volatile(
-                        "fsub.ps %[t], %[z], %[x]\n"
-                        "fmul.ps %[t], %[t], %[l2e]\n"
-                        "fexp.ps %[t], %[t]\n"
-                        "fadd.ps %[t], %[t], %[o]\n"
-                        "frcp.ps %[t], %[t]\n"
-                        "fmul.ps %[t], %[t], %[x]\n"
-                        : [t] "=&f"(_t)
-                        : [x] "f"(acc), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e)
-                    );
+                    float _t = vsilu_ps(acc);
                     __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory");
                 } else {
                     __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(acc) : "memory");
@@ -932,18 +818,18 @@ static void conv2d_3x3_p1_fp32_mh_vpu(uint32_t hid,
  * (oh, ow8) tile - input v_pkg is loaded once per (ic, ky, kx, ow8) and
  * reused across all 8 oc lanes. */
 static void conv2d_3x3_p1_fp32_mh_vpu_oc8(uint32_t hid,
-                                          const float *in, float *out,
-                                          const float *W, const float *B,
+                                          const float * __restrict__ in, float * __restrict__ out,
+                                          const float * __restrict__ W, const float * __restrict__ B,
                                           uint32_t IC, uint32_t H, uint32_t W_,
                                           uint32_t OC,
                                           uint32_t act)
 {
-    if (!VPU_ACTIVE(hid)) return;
-    const uint32_t cidx = VPU_IDX(hid);
+    if (!mh_is_t0(hid)) return;
+    const uint32_t cidx = mh_t0_idx(hid);
     const uint32_t oc_tiles = OC / 8u;
     uint32_t tile_lo, tile_hi;
-    *(volatile uint32_t *)&tile_lo = (oc_tiles * cidx) / VPU_N;
-    *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / VPU_N;
+    *(volatile uint32_t *)&tile_lo = (oc_tiles * cidx) / MH_NUM_T0;
+    *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / MH_NUM_T0;
 
     float acc_buf[8] __attribute__((aligned(32)));
 
@@ -951,8 +837,8 @@ static void conv2d_3x3_p1_fp32_mh_vpu_oc8(uint32_t hid,
         const uint32_t oc0 = tile * 8u;
         for (int32_t oh = 0; oh < (int32_t)H; oh++) {
             for (int32_t ow8 = 0; ow8 < (int32_t)W_; ow8 += 8) {
-                register float a0 asm("f0"), a1 asm("f1"), a2 asm("f2"), a3 asm("f3");
-                register float a4 asm("f4"), a5 asm("f5"), a6 asm("f6"), a7 asm("f7");
+                float a0, a1, a2, a3;
+                float a4, a5, a6, a7;
 #define INIT_ACC(REG, OO) do { \
     union { float f; uint32_t u; } _bb; _bb.f = B[oc0 + OO]; \
     __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(REG) : "r"((uint64_t)_bb.u)); \
@@ -1025,13 +911,12 @@ static void conv2d_3x3_p1_fp32_mh_vpu_oc8(uint32_t hid,
                 }
 
 #define STORE_ACC(REG, OO) do { \
-    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(REG) : "memory"); \
-    __asm__ volatile("fence rw, rw" ::: "memory"); \
     float *dst = out + ((oc0 + OO) * H + (uint32_t)oh) * W_ + (uint32_t)ow8; \
     if (act == 1u) { \
-        for (int l = 0; l < 8; l++) dst[l] = silu(acc_buf[l]); \
+        float _t = vsilu_ps(REG); \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory"); \
     } else { \
-        for (int l = 0; l < 8; l++) dst[l] = acc_buf[l]; \
+        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(REG) : "memory"); \
     } \
 } while (0)
                 STORE_ACC(a0, 0); STORE_ACC(a1, 1); STORE_ACC(a2, 2); STORE_ACC(a3, 3);
@@ -1053,30 +938,19 @@ static void conv2d_3x3_p1_fp32_mh_vpu_oc8(uint32_t hid,
  * Net VPU speedup: 4x (vs 8x for stride=1).  Constraint: OW % 4 == 0
  * (true for 16, 32, 64, 128, 256). */
 static void conv2d_3x3_s2_p1_fp32_mh_vpu(uint32_t hid,
-                                          const float *in, float *out,
-                                          const float *W, const float *B,
+                                          const float * __restrict__ in, float * __restrict__ out,
+                                          const float * __restrict__ W, const float * __restrict__ B,
                                           uint32_t IC, uint32_t IH, uint32_t IW,
                                           uint32_t OC, uint32_t OH, uint32_t OW,
                                           uint32_t act)
 {
-    if (!VPU_ACTIVE(hid)) return;
-    const uint32_t cidx = VPU_IDX(hid);
+    if (!mh_is_t0(hid)) return;
+    const uint32_t cidx = mh_t0_idx(hid);
     uint32_t oc_lo, oc_hi;
-    *(volatile uint32_t *)&oc_lo = (OC * cidx) / VPU_N;
-    *(volatile uint32_t *)&oc_hi = (OC * (cidx + 1u)) / VPU_N;
+    *(volatile uint32_t *)&oc_lo = (OC * cidx) / MH_NUM_T0;
+    *(volatile uint32_t *)&oc_hi = (OC * (cidx + 1u)) / MH_NUM_T0;
 
     float acc_buf[8] __attribute__((aligned(32)));
-
-    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
-    float vsilu_zero, vsilu_one, vsilu_log2e;
-    {
-        union { float f; uint32_t u; } _z; _z.f = 0.0f;
-        union { float f; uint32_t u; } _o; _o.f = 1.0f;
-        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
-    }
 
     for (uint32_t oc = oc_lo; oc < oc_hi; oc++) {
         const float bias_v = B[oc];
@@ -1085,7 +959,7 @@ static void conv2d_3x3_s2_p1_fp32_mh_vpu(uint32_t hid,
             int32_t is_h_edge = (oh == 0); // No bottom edge because stride 2 padding 1 never overshoots by 2
             for (int32_t ow4 = 0; ow4 < (int32_t)OW; ow4 += 4) {
                 int32_t is_w_edge = (ow4 == 0) || (ow4 * 2 + 8 > (int32_t)IW - 1);
-                register float acc asm("f0");
+                float acc;
                 __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(acc) : "r"((uint64_t)bb.u));
 
                 if (!is_h_edge && !is_w_edge) {
@@ -1142,30 +1016,18 @@ static void conv2d_3x3_s2_p1_fp32_mh_vpu(uint32_t hid,
                     }
                 }
 
-                /* Store the 4 valid lanes to out[oc, oh, ow4..ow4+3]. */
+                /* Store the 4 valid (strided) lanes to out[oc, oh, ow4..ow4+3].
+                 * Non-contiguous gather -- still needs the scratch+fence round
+                 * trip (can't do a single vector store to a strided dest), but
+                 * SiLU is now computed ONCE, vectorized, on all 8 lanes before
+                 * the store, instead of 4 separate scalar my_expf/fast_recip
+                 * calls after it. */
+                float _store_val = (act == 1u) ? vsilu_ps(acc) : acc;
+                __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(_store_val) : "memory");
+                __asm__ volatile("fence rw, rw" ::: "memory");
                 float *dst = out + (oc * OH + (uint32_t)oh) * OW + (uint32_t)ow4;
-                if (act == 1u) {
-                    float _t;
-                    __asm__ volatile(
-                        "fsub.ps %[t], %[z], %[x]\n"
-                        "fmul.ps %[t], %[t], %[l2e]\n"
-                        "fexp.ps %[t], %[t]\n"
-                        "fadd.ps %[t], %[t], %[o]\n"
-                        "frcp.ps %[t], %[t]\n"
-                        "fmul.ps %[t], %[t], %[x]\n"
-                        : [t] "=&f"(_t)
-                        : [x] "f"(acc), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e)
-                    );
-                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(_t) : "memory");
-                    __asm__ volatile("fence rw, rw" ::: "memory");
-                    dst[0] = acc_buf[0]; dst[1] = acc_buf[2];
-                    dst[2] = acc_buf[4]; dst[3] = acc_buf[6];
-                } else {
-                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(acc) : "memory");
-                    __asm__ volatile("fence rw, rw" ::: "memory");
-                    dst[0] = acc_buf[0]; dst[1] = acc_buf[2];
-                    dst[2] = acc_buf[4]; dst[3] = acc_buf[6];
-                }
+                dst[0] = acc_buf[0]; dst[1] = acc_buf[2];
+                dst[2] = acc_buf[4]; dst[3] = acc_buf[6];
             }
         }
     }
@@ -1174,48 +1036,31 @@ static void conv2d_3x3_s2_p1_fp32_mh_vpu(uint32_t hid,
         evict((const void *)(out + oc_lo * OH * OW), bytes);
     }
 }
-/* OC4-blocked VPU 3x3 stride=2 pad=1. 4 OC accumulated simultaneously per
- * (oh, ow4) tile, sharing one 8-lane input load (only even lanes valid,
- * same discard-on-store trick as the single-OC version). Weights arrive
- * pre-repacked (see repack_3x3_oc4_weights / WR3X3 scratch) -- an OC-tile's
- * 4 weights per (ic,ky,kx) tap are contiguous instead of IC*9*4B apart. */
+#define CONV_3x3_S2_P1_VPU(...) do { conv2d_3x3_s2_p1_fp32_mh_vpu(hid, __VA_ARGS__); MH_BARRIER(); } while (0)
 
 /* OC4-blocked VPU 3x3 stride=1 pad=1.  4 OC accumulated simultaneously per
  * (oh, ow8) tile.  Lower register pressure than OC8 to avoid the M18 hang. */
 static void conv2d_3x3_p1_fp32_mh_vpu_oc4(uint32_t hid,
-                                          const float *in, float *out,
-                                          const float *WR, const float *B,
+                                          const float * __restrict__ in, float * __restrict__ out,
+                                          const float * __restrict__ W, const float * __restrict__ B,
                                           uint32_t IC, uint32_t H, uint32_t W_,
                                           uint32_t OC,
                                           uint32_t act)
 {
-    if (!VPU_ACTIVE(hid)) return;
-    const uint32_t cidx = VPU_IDX(hid);
+    if (!mh_is_t0(hid)) return;
+    const uint32_t cidx = mh_t0_idx(hid);
     const uint32_t oc_tiles = OC / 4u;
     uint32_t tile_lo, tile_hi;
-    *(volatile uint32_t *)&tile_lo = (oc_tiles * cidx) / VPU_N;
-    *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / VPU_N;
+    *(volatile uint32_t *)&tile_lo = (oc_tiles * cidx) / MH_NUM_T0;
+    *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / MH_NUM_T0;
 
     float acc_buf[8] __attribute__((aligned(32)));
-
-    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
-    float vsilu_zero, vsilu_one, vsilu_log2e;
-    {
-        union { float f; uint32_t u; } _z; _z.f = 0.0f;
-        union { float f; uint32_t u; } _o; _o.f = 1.0f;
-        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
-    }
 
     for (uint32_t tile = tile_lo; tile < tile_hi; tile++) {
         const uint32_t oc0 = tile * 4u;
         for (int32_t oh = 0; oh < (int32_t)H; oh++) {
-            int32_t is_h_edge = (oh == 0) || (oh == (int32_t)H - 1);
             for (int32_t ow8 = 0; ow8 < (int32_t)W_; ow8 += 8) {
-                int32_t is_w_edge = (ow8 == 0) || (ow8 + 8 > (int32_t)W_ - 1);
-                register float a0 asm("f0"), a1 asm("f1"), a2 asm("f2"), a3 asm("f3");
+                float a0, a1, a2, a3;
 #define INIT_ACC(REG, OO) do { \
     union { float f; uint32_t u; } _bb; _bb.f = B[oc0 + OO]; \
     __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(REG) : "r"((uint64_t)_bb.u)); \
@@ -1223,72 +1068,29 @@ static void conv2d_3x3_p1_fp32_mh_vpu_oc4(uint32_t hid,
                 INIT_ACC(a0, 0); INIT_ACC(a1, 1); INIT_ACC(a2, 2); INIT_ACC(a3, 3);
 #undef INIT_ACC
 
-                /* Hoist edge detection out of the (ic,ky,kx) loop, matching
-                 * the per-OC kernel: the common interior tile gets a
-                 * branch-free inner loop instead of re-checking h/w bounds on
-                 * every one of IC*9 iterations. */
-                if (!is_h_edge && !is_w_edge) {
-                    for (uint32_t ic = 0; ic < IC; ic++) {
-                        for (uint32_t ky = 0; ky < 3u; ky++) {
-                            const int32_t ih = oh + (int32_t)ky - 1;
-                            for (uint32_t kx = 0; kx < 3u; kx++) {
-                                const int32_t iw = ow8 + (int32_t)kx - 1;
-                                float v_pkg;
+                for (uint32_t ic = 0; ic < IC; ic++) {
+                    for (uint32_t ky = 0; ky < 3u; ky++) {
+                        const int32_t ih = oh + (int32_t)ky - 1;
+                        if (ih < 0 || ih >= (int32_t)H) continue;
+                        for (uint32_t kx = 0; kx < 3u; kx++) {
+                            const int32_t iw = ow8 + (int32_t)kx - 1;
+                            float v_pkg;
+                            float w_pkg;
+                            if (iw >= 0 && iw + 7 < (int32_t)W_) {
                                 const float *src = in + (ic * H + (uint32_t)ih) * W_ + (uint32_t)iw;
                                 __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v_pkg) : "r"(src));
-                                /* Broadcast all 4 OC weights into DISTINCT vector
-                                 * registers first, THEN issue the 4 fmadds, so the
-                                 * broadcasts pipeline instead of each one stalling
-                                 * on its own immediately-dependent fmadd. Base
-                                 * pointer hoisted out of BC_ONE so the compiler
-                                 * emits one address computation + 3 constant-offset
-                                 * loads instead of recomputing the full index four
-                                 * times (was producing ~16 redundant addiw/slli/
-                                 * srli/add instructions per tap). */
-                                const float *wr_p = &WR[((tile * IC + ic) * 9u + ky * 3u + kx) * 4u];
-                                float w0p, w1p, w2p, w3p;
-#define BC_ONE(WREG, OO) do { \
-    union { float f; uint32_t u; } _ww; _ww.f = wr_p[OO]; \
-    __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(WREG) : "r"((uint64_t)_ww.u)); \
+#define FMADD_ONE(REG, OO) do { \
+    union { float f; uint32_t u; } _ww; _ww.f = W[((oc0 + OO) * IC + ic) * 9u + ky * 3u + kx]; \
+    __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(w_pkg) : "r"((uint64_t)_ww.u)); \
+    __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(REG) : "f"(v_pkg), "f"(w_pkg)); \
 } while (0)
-                                BC_ONE(w0p, 0); BC_ONE(w1p, 1); BC_ONE(w2p, 2); BC_ONE(w3p, 3);
-#undef BC_ONE
-                                __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a0) : "f"(v_pkg), "f"(w0p));
-                                __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a1) : "f"(v_pkg), "f"(w1p));
-                                __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a2) : "f"(v_pkg), "f"(w2p));
-                                __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a3) : "f"(v_pkg), "f"(w3p));
-                            }
-                        }
-                    }
-                } else {
-                    for (uint32_t ic = 0; ic < IC; ic++) {
-                        for (uint32_t ky = 0; ky < 3u; ky++) {
-                            const int32_t ih = oh + (int32_t)ky - 1;
-                            if (ih < 0 || ih >= (int32_t)H) continue;
-                            for (uint32_t kx = 0; kx < 3u; kx++) {
-                                const int32_t iw = ow8 + (int32_t)kx - 1;
-                                float v_pkg;
-                                if (iw >= 0 && iw + 7 < (int32_t)W_) {
-                                    const float *src = in + (ic * H + (uint32_t)ih) * W_ + (uint32_t)iw;
-                                    __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v_pkg) : "r"(src));
-                                    const float *wr_p = &WR[((tile * IC + ic) * 9u + ky * 3u + kx) * 4u];
-                                    float w0p, w1p, w2p, w3p;
-#define BC_ONE(WREG, OO) do { \
-    union { float f; uint32_t u; } _ww; _ww.f = wr_p[OO]; \
-    __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(WREG) : "r"((uint64_t)_ww.u)); \
-} while (0)
-                                    BC_ONE(w0p, 0); BC_ONE(w1p, 1); BC_ONE(w2p, 2); BC_ONE(w3p, 3);
-#undef BC_ONE
-                                    __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a0) : "f"(v_pkg), "f"(w0p));
-                                    __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a1) : "f"(v_pkg), "f"(w1p));
-                                    __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a2) : "f"(v_pkg), "f"(w2p));
-                                    __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a3) : "f"(v_pkg), "f"(w3p));
-                                } else {
-                                    const float *wr_edge_p = &WR[((tile * IC + ic) * 9u + ky * 3u + kx) * 4u];
+                                FMADD_ONE(a0, 0); FMADD_ONE(a1, 1); FMADD_ONE(a2, 2); FMADD_ONE(a3, 3);
+#undef FMADD_ONE
+                            } else {
 #define EDGE_ONE(REG, OO) do { \
     __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(REG) : "memory"); \
     __asm__ volatile("fence rw, rw" ::: "memory"); \
-    const float w_scalar = wr_edge_p[OO]; \
+    const float w_scalar = W[((oc0 + OO) * IC + ic) * 9u + ky * 3u + kx]; \
     for (int lane = 0; lane < 8; lane++) { \
         const int32_t iw_l = ow8 + lane + (int32_t)kx - 1; \
         if (iw_l >= 0 && iw_l < (int32_t)W_) { \
@@ -1297,9 +1099,8 @@ static void conv2d_3x3_p1_fp32_mh_vpu_oc4(uint32_t hid,
     } \
     __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(REG) : "r"(acc_buf)); \
 } while (0)
-                                    EDGE_ONE(a0, 0); EDGE_ONE(a1, 1); EDGE_ONE(a2, 2); EDGE_ONE(a3, 3);
+                                EDGE_ONE(a0, 0); EDGE_ONE(a1, 1); EDGE_ONE(a2, 2); EDGE_ONE(a3, 3);
 #undef EDGE_ONE
-                                }
                             }
                         }
                     }
@@ -1308,17 +1109,7 @@ static void conv2d_3x3_p1_fp32_mh_vpu_oc4(uint32_t hid,
 #define STORE_ACC(REG, OO) do { \
     float *dst = out + ((oc0 + OO) * H + (uint32_t)oh) * W_ + (uint32_t)ow8; \
     if (act == 1u) { \
-        float _t; \
-        __asm__ volatile( \
-            "fsub.ps %[t], %[z], %[x]\n" \
-            "fmul.ps %[t], %[t], %[l2e]\n" \
-            "fexp.ps %[t], %[t]\n" \
-            "fadd.ps %[t], %[t], %[o]\n" \
-            "frcp.ps %[t], %[t]\n" \
-            "fmul.ps %[t], %[t], %[x]\n" \
-            : [t] "=&f"(_t) \
-            : [x] "f"(REG), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e) \
-        ); \
+        float _t = vsilu_ps(REG); \
         __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory"); \
     } else { \
         __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(REG) : "memory"); \
@@ -1336,300 +1127,33 @@ static void conv2d_3x3_p1_fp32_mh_vpu_oc4(uint32_t hid,
     }
 }
 
-/* Repack (OC,IC,KY,KX)-major weights into (tile,IC,KY,KX,4)-major so an OC4
- * tile's 4 weights for a fixed (ic,ky,kx) are contiguous (16B) instead of
- * IC*9*4 bytes apart. T0-only, same tile boundaries as the compute kernel. */
-static void repack_3x3_oc4_weights(uint32_t hid, const float *W, float *WR,
-                                   uint32_t IC, uint32_t OC)
-{
-    if (!mh_is_t0(hid)) return;
-    const uint32_t cidx = mh_t0_idx(hid);
-    const uint32_t oc_tiles = OC / 4u;
-    uint32_t tile_lo, tile_hi;
-    *(volatile uint32_t *)&tile_lo = (oc_tiles * cidx) / MH_NUM_T0;
-    *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / MH_NUM_T0;
-
-    for (uint32_t tile = tile_lo; tile < tile_hi; tile++) {
-        const uint32_t oc0 = tile * 4u;
-        float *dst_tile = WR + (uint64_t)tile * IC * 9u * 4u;
-        for (uint32_t ic = 0; ic < IC; ic++) {
-            for (uint32_t k = 0; k < 9u; k++) {
-                float *dst = dst_tile + (ic * 9u + k) * 4u;
-                dst[0] = W[((oc0 + 0u) * IC + ic) * 9u + k];
-                dst[1] = W[((oc0 + 1u) * IC + ic) * 9u + k];
-                dst[2] = W[((oc0 + 2u) * IC + ic) * 9u + k];
-                dst[3] = W[((oc0 + 3u) * IC + ic) * 9u + k];
-            }
-        }
-    }
-    if (tile_hi > tile_lo) {
-        const uint64_t bytes = (uint64_t)(tile_hi - tile_lo) * IC * 9u * 4u * sizeof(float);
-        evict((const void *)(WR + (uint64_t)tile_lo * IC * 9u * 4u), bytes);
-    }
-}
-
-/* Scratch for the repack above: max IC*OC*9*4B across all CONV_3x3_P1 OC4
- * layers in this model is 128*128*9*4 = 256*64*9*4 = 589824 B (576 KB).
- * Placed past yolo_m30's highest documented scratch offset (SCR_HEAD_D @
- * 0x4C80000, 1MB, ends 0x4D80000) with ~2MB of headroom before BUFFER_SIZE
- * (0x5000000/80MB) -- see yolo_m30_argbuf.c's scratch-slot comments. Reused
- * sequentially across all OC>=32 3x3-P1 calls; never live across calls. */
-#define WR3X3_SCRATCH_OFFSET 0x04D80000u
-#define WR3X3_SCRATCH_BYTES  (256u * 64u * 9u * 4u)
-
-static inline void conv2d_3x3_p1_disp(uint32_t hid, float *wr_scratch,
-                                      const float *in, float *out,
-                                      const float *W, const float *B,
+static inline void conv2d_3x3_p1_disp(uint32_t hid,
+                                      const float * __restrict__ in, float * __restrict__ out,
+                                      const float * __restrict__ W, const float * __restrict__ B,
                                       uint32_t IC, uint32_t H, uint32_t W_,
                                       uint32_t OC,
                                       uint32_t act)
 {
     /* OC8 hangs the silicon (M18); use OC4 for OC>=32, per-OC for smaller. */
-    if (OC >= 32u) {
-        repack_3x3_oc4_weights(hid, W, wr_scratch, IC, OC);
-        MH_BARRIER();
-        conv2d_3x3_p1_fp32_mh_vpu_oc4(hid, in, out, wr_scratch, B, IC, H, W_, OC, act);
-    } else {
-        conv2d_3x3_p1_fp32_mh_vpu(hid, in, out, W, B, IC, H, W_, OC, act);
-    }
+    if (OC >= 32u) conv2d_3x3_p1_fp32_mh_vpu_oc4(hid, in, out, W, B, IC, H, W_, OC, act);
+    else           conv2d_3x3_p1_fp32_mh_vpu    (hid, in, out, W, B, IC, H, W_, OC, act);
 }
-#define CONV_3x3_P1(...) do { \
-    conv2d_3x3_p1_disp(hid, (float *)(base + WR3X3_SCRATCH_OFFSET), __VA_ARGS__); \
-    MH_BARRIER(); \
-} while (0)
-
-static void conv2d_3x3_s2_p1_fp32_mh_vpu_oc4(uint32_t hid,
-                                             const float *in, float *out,
-                                             const float *WR, const float *B,
-                                             uint32_t IC, uint32_t IH, uint32_t IW,
-                                             uint32_t OC, uint32_t OH, uint32_t OW,
-                                             uint32_t act)
-{
-    if (!VPU_ACTIVE(hid)) return;
-    const uint32_t cidx = VPU_IDX(hid);
-    const uint32_t oc_tiles = OC / 4u;
-    uint32_t tile_lo, tile_hi;
-    *(volatile uint32_t *)&tile_lo = (oc_tiles * cidx) / VPU_N;
-    *(volatile uint32_t *)&tile_hi = (oc_tiles * (cidx + 1u)) / VPU_N;
-
-    float acc_buf[8] __attribute__((aligned(32)));
-
-    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
-    float vsilu_zero, vsilu_one, vsilu_log2e;
-    {
-        union { float f; uint32_t u; } _z; _z.f = 0.0f;
-        union { float f; uint32_t u; } _o; _o.f = 1.0f;
-        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
-    }
-
-    for (uint32_t tile = tile_lo; tile < tile_hi; tile++) {
-        const uint32_t oc0 = tile * 4u;
-        for (int32_t oh = 0; oh < (int32_t)OH; oh++) {
-            int32_t is_h_edge = (oh == 0);
-            for (int32_t ow4 = 0; ow4 < (int32_t)OW; ow4 += 4) {
-                int32_t is_w_edge = (ow4 == 0) || (ow4 * 2 + 8 > (int32_t)IW - 1);
-                register float a0 asm("f0"), a1 asm("f1"), a2 asm("f2"), a3 asm("f3");
-#define INIT_ACC(REG, OO) do { \
-    union { float f; uint32_t u; } _bb; _bb.f = B[oc0 + OO]; \
-    __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(REG) : "r"((uint64_t)_bb.u)); \
-} while (0)
-                INIT_ACC(a0, 0); INIT_ACC(a1, 1); INIT_ACC(a2, 2); INIT_ACC(a3, 3);
-#undef INIT_ACC
-
-                if (!is_h_edge && !is_w_edge) {
-#define BC_ONE(WREG, OO) do { \
-    union { float f; uint32_t u; } _ww; _ww.f = wr_p[OO]; \
-    __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(WREG) : "r"((uint64_t)_ww.u)); \
-} while (0)
-#define APPLY_TAP(VREG) do { \
-    float w0p, w1p, w2p, w3p; \
-    BC_ONE(w0p, 0); BC_ONE(w1p, 1); BC_ONE(w2p, 2); BC_ONE(w3p, 3); \
-    __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a0) : "f"(VREG), "f"(w0p)); \
-    __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a1) : "f"(VREG), "f"(w1p)); \
-    __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a2) : "f"(VREG), "f"(w2p)); \
-    __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a3) : "f"(VREG), "f"(w3p)); \
-} while (0)
-                    for (uint32_t ic = 0; ic < IC; ic++) {
-                        for (uint32_t ky = 0; ky < 3u; ky++) {
-                            const int32_t ih = oh * 2 + (int32_t)ky - 1;
-
-                            /* kx=0: real load. */
-                            float v0;
-                            {
-                                const int32_t iw_base = ow4 * 2 + 0 - 1;
-                                const float *src = in + (ic * IH + (uint32_t)ih) * IW + (uint32_t)iw_base;
-                                __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v0) : "r"(src));
-                                const float *wr_p = &WR[((tile * IC + ic) * 9u + ky * 3u + 0u) * 4u];
-                                APPLY_TAP(v0);
-                            }
-                            /* kx=1: derived from kx=0's load via fswizz.ps
-                             * instead of a second flq2. For a stride-2 3x3
-                             * tap, lane (2j+1) of the kx-tap's 8-lane load
-                             * equals lane (2j) of the (kx+1)-tap's load (both
-                             * read input col (ow4+j)*2+kx) -- i.e. the "wasted"
-                             * odd lanes of this load are exactly what kx=1
-                             * needs at its even lanes. fswizz.ps permutes
-                             * within each 128-bit half only, and this specific
-                             * remap (d0<-s1, d2<-s3, d4<-s5, d6<-s7; imm=0x31)
-                             * never crosses that boundary, so one instruction
-                             * replaces one flq2. */
-                            {
-                                float v1;
-                                __asm__ volatile("fswizz.ps %0, %1, 0x31\n" : "=f"(v1) : "f"(v0));
-                                const float *wr_p = &WR[((tile * IC + ic) * 9u + ky * 3u + 1u) * 4u];
-                                APPLY_TAP(v1);
-                            }
-                            /* kx=2: needs data outside kx=0's load window, so
-                             * it still needs its own real load. */
-                            {
-                                const int32_t iw_base = ow4 * 2 + 2 - 1;
-                                float v2;
-                                const float *src = in + (ic * IH + (uint32_t)ih) * IW + (uint32_t)iw_base;
-                                __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v2) : "r"(src));
-                                const float *wr_p = &WR[((tile * IC + ic) * 9u + ky * 3u + 2u) * 4u];
-                                APPLY_TAP(v2);
-                            }
-                        }
-                    }
-#undef APPLY_TAP
-#undef BC_ONE
-                } else {
-                    for (uint32_t ic = 0; ic < IC; ic++) {
-                        for (uint32_t ky = 0; ky < 3u; ky++) {
-                            const int32_t ih = oh * 2 + (int32_t)ky - 1;
-                            if (ih < 0 || ih >= (int32_t)IH) continue;
-                            for (uint32_t kx = 0; kx < 3u; kx++) {
-                                const int32_t iw_base = ow4 * 2 + (int32_t)kx - 1;
-                                float v_pkg;
-                                if (iw_base >= 0 && iw_base + 7 < (int32_t)IW) {
-                                    const float *src = in + (ic * IH + (uint32_t)ih) * IW + (uint32_t)iw_base;
-                                    __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v_pkg) : "r"(src));
-                                    const float *wr_p = &WR[((tile * IC + ic) * 9u + ky * 3u + kx) * 4u];
-                                    float w0p, w1p, w2p, w3p;
-#define BC_ONE(WREG, OO) do { \
-    union { float f; uint32_t u; } _ww; _ww.f = wr_p[OO]; \
-    __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(WREG) : "r"((uint64_t)_ww.u)); \
-} while (0)
-                                    BC_ONE(w0p, 0); BC_ONE(w1p, 1); BC_ONE(w2p, 2); BC_ONE(w3p, 3);
-#undef BC_ONE
-                                    __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a0) : "f"(v_pkg), "f"(w0p));
-                                    __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a1) : "f"(v_pkg), "f"(w1p));
-                                    __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a2) : "f"(v_pkg), "f"(w2p));
-                                    __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(a3) : "f"(v_pkg), "f"(w3p));
-                                } else {
-                                    const float *wr_edge_p = &WR[((tile * IC + ic) * 9u + ky * 3u + kx) * 4u];
-#define EDGE_ONE(REG, OO) do { \
-    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(REG) : "memory"); \
-    __asm__ volatile("fence rw, rw" ::: "memory"); \
-    const float w_scalar = wr_edge_p[OO]; \
-    for (int lane = 0; lane < 4; lane++) { \
-        const int32_t iw_l = iw_base + 2 * lane; \
-        if (iw_l >= 0 && iw_l < (int32_t)IW) { \
-            acc_buf[2 * lane] += in[(ic * IH + (uint32_t)ih) * IW + (uint32_t)iw_l] * w_scalar; \
-        } \
-    } \
-    __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(REG) : "r"(acc_buf)); \
-} while (0)
-                                    EDGE_ONE(a0, 0); EDGE_ONE(a1, 1); EDGE_ONE(a2, 2); EDGE_ONE(a3, 3);
-#undef EDGE_ONE
-                                }
-                            }
-                        }
-                    }
-                }
-
-#define STORE_ACC(REG, OO) do { \
-    float *dst = out + ((oc0 + OO) * OH + (uint32_t)oh) * OW + (uint32_t)ow4; \
-    if (act == 1u) { \
-        float _t; \
-        __asm__ volatile( \
-            "fsub.ps %[t], %[z], %[x]\n" \
-            "fmul.ps %[t], %[t], %[l2e]\n" \
-            "fexp.ps %[t], %[t]\n" \
-            "fadd.ps %[t], %[t], %[o]\n" \
-            "frcp.ps %[t], %[t]\n" \
-            "fmul.ps %[t], %[t], %[x]\n" \
-            : [t] "=&f"(_t) \
-            : [x] "f"(REG), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e) \
-        ); \
-        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(_t) : "memory"); \
-        __asm__ volatile("fence rw, rw" ::: "memory"); \
-        dst[0] = acc_buf[0]; dst[1] = acc_buf[2]; \
-        dst[2] = acc_buf[4]; dst[3] = acc_buf[6]; \
-    } else { \
-        __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(REG) : "memory"); \
-        __asm__ volatile("fence rw, rw" ::: "memory"); \
-        dst[0] = acc_buf[0]; dst[1] = acc_buf[2]; \
-        dst[2] = acc_buf[4]; dst[3] = acc_buf[6]; \
-    } \
-} while (0)
-                STORE_ACC(a0, 0); STORE_ACC(a1, 1); STORE_ACC(a2, 2); STORE_ACC(a3, 3);
-#undef STORE_ACC
-            }
-        }
-    }
-    if (tile_hi > tile_lo) {
-        const uint32_t oc_lo = tile_lo * 4u;
-        const uint32_t bytes = (tile_hi - tile_lo) * 4u * OH * OW * sizeof(float);
-        evict((const void *)(out + oc_lo * OH * OW), bytes);
-    }
-}
-
-/* Scratch for the S2 OC4 repack: reuses the same layout as CONV_3x3_P1's
- * (tile,IC,KY,KX,4) repack (repack_3x3_oc4_weights is shape-agnostic --
- * it only depends on IC/OC, not on stride/output-size), but S2 layers run
- * concurrently with neither P1 nor 1x1 in this pipeline (sequential, one
- * conv at a time), so it's safe to reuse WR3X3_SCRATCH_OFFSET directly
- * rather than reserving a third address. Max IC*OC*9 across S2 OC4 layers
- * (IC=32,OC=64 -> 18432) is well under the 3x3-P1 scratch's capacity. */
-static inline void conv2d_3x3_s2_p1_disp(uint32_t hid, float *wr_scratch,
-                                         const float *in, float *out,
-                                         const float *W, const float *B,
-                                         uint32_t IC, uint32_t IH, uint32_t IW,
-                                         uint32_t OC, uint32_t OH, uint32_t OW,
-                                         uint32_t act)
-{
-    if (OC >= 32u) {
-        repack_3x3_oc4_weights(hid, W, wr_scratch, IC, OC);
-        MH_BARRIER();
-        conv2d_3x3_s2_p1_fp32_mh_vpu_oc4(hid, in, out, wr_scratch, B, IC, IH, IW, OC, OH, OW, act);
-    } else {
-        conv2d_3x3_s2_p1_fp32_mh_vpu(hid, in, out, W, B, IC, IH, IW, OC, OH, OW, act);
-    }
-}
-#define CONV_3x3_S2_P1_VPU(...) do { \
-    conv2d_3x3_s2_p1_disp(hid, (float *)(base + WR3X3_SCRATCH_OFFSET), __VA_ARGS__); \
-    MH_BARRIER(); \
-} while (0)
+#define CONV_3x3_P1(...) do { conv2d_3x3_p1_disp(hid, __VA_ARGS__); MH_BARRIER(); } while (0)
 
 /* VPU-vectorized depthwise 3x3 (stride=1 pad=1, OW % 8 == 0). */
 static void conv2d_dw3x3_s1_p1_fp32_mh_vpu(uint32_t hid,
-                                           const float *in, float *out,
-                                           const float *W, const float *B,
+                                           const float * __restrict__ in, float * __restrict__ out,
+                                           const float * __restrict__ W, const float * __restrict__ B,
                                            uint32_t C, uint32_t H, uint32_t W_,
                                            uint32_t act)
 {
-    if (!VPU_ACTIVE(hid)) return;
-    const uint32_t cidx = VPU_IDX(hid);
+    if (!mh_is_t0(hid)) return;
+    const uint32_t cidx = mh_t0_idx(hid);
     uint32_t c_lo, c_hi;
-    *(volatile uint32_t *)&c_lo = (C * cidx) / VPU_N;
-    *(volatile uint32_t *)&c_hi = (C * (cidx + 1u)) / VPU_N;
+    *(volatile uint32_t *)&c_lo = (C * cidx) / MH_NUM_T0;
+    *(volatile uint32_t *)&c_hi = (C * (cidx + 1u)) / MH_NUM_T0;
 
     float acc_buf[8] __attribute__((aligned(32)));
-
-    /* Vectorized SiLU constants (see CONV_3x3_P1 OC4 for detail). */
-    float vsilu_zero, vsilu_one, vsilu_log2e;
-    {
-        union { float f; uint32_t u; } _z; _z.f = 0.0f;
-        union { float f; uint32_t u; } _o; _o.f = 1.0f;
-        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
-    }
 
     for (uint32_t c = c_lo; c < c_hi; c++) {
         const float bias_v = B[c];
@@ -1637,7 +1161,7 @@ static void conv2d_dw3x3_s1_p1_fp32_mh_vpu(uint32_t hid,
         const float *wp = W + c * 9u;   /* 3x3 weights for channel c */
         for (int32_t oh = 0; oh < (int32_t)H; oh++) {
             for (int32_t ow8 = 0; ow8 < (int32_t)W_; ow8 += 8) {
-                register float acc asm("f0");
+                float acc;
                 __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(acc) : "r"((uint64_t)bb.u));
 
                 for (uint32_t ky = 0; ky < 3u; ky++) {
@@ -1671,17 +1195,7 @@ static void conv2d_dw3x3_s1_p1_fp32_mh_vpu(uint32_t hid,
 
                 float *dst = out + (c * H + (uint32_t)oh) * W_ + (uint32_t)ow8;
                 if (act == 1u) {
-                    float _t;
-                    __asm__ volatile(
-                        "fsub.ps %[t], %[z], %[x]\n"
-                        "fmul.ps %[t], %[t], %[l2e]\n"
-                        "fexp.ps %[t], %[t]\n"
-                        "fadd.ps %[t], %[t], %[o]\n"
-                        "frcp.ps %[t], %[t]\n"
-                        "fmul.ps %[t], %[t], %[x]\n"
-                        : [t] "=&f"(_t)
-                        : [x] "f"(acc), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e)
-                    );
+                    float _t = vsilu_ps(acc);
                     __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory");
                 } else {
                     __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(acc) : "memory");
@@ -1699,72 +1213,163 @@ static void conv2d_dw3x3_s1_p1_fp32_mh_vpu(uint32_t hid,
 
 /* -- Multi-hart helpers for the residual / concat / activation tail -- */
 
-/* mh_copy_floats: split N float copies across all compute harts. */
-static inline void mh_copy_floats(uint32_t hid, float *dst, const float *src, uint32_t N) {
+/* Partition N elements into whole 2-float (8-byte) blocks BEFORE dividing
+ * across harts -- same block-quantization principle as the DFL-decode/
+ * postprocess cache-line fixes elsewhere in this file, generalized here
+ * to guarantee 8-byte alignment for 64-bit wide loads/stores instead of
+ * 64-byte cache-line alignment. lo/hi are always even, so dst+lo/src+lo
+ * stay 8-byte aligned relative to this kernel's scratch offsets (all far
+ * more than 8-byte aligned already -- every SCR_* constant is a multiple
+ * of 0x10000). A single odd tail element (N odd) is handled by the last
+ * hart alone, outside the wide path. */
+static inline __attribute__((always_inline)) void mh_even_range(uint32_t N, uint32_t cidx, uint32_t *lo, uint32_t *hi) {
+    uint32_t blk_lo, blk_hi;
+    yolo_range(N / 2u, cidx, &blk_lo, &blk_hi);
+    *lo = blk_lo * 2u;
+    *hi = blk_hi * 2u;
+}
+
+/* mh_copy_floats: split N float copies across all compute harts, using
+ * 64-bit wide loads/stores (2 floats/iteration) for the aligned bulk --
+ * pure data movement, so packing two floats into one uint64_t transfer
+ * is bit-identical to two scalar float copies, just half the memory
+ * instructions. */
+static inline __attribute__((always_inline)) void mh_copy_floats(uint32_t hid, float *dst, const float *src, uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t lo, hi;
-    yolo_range(N, cidx, &lo, &hi);
-    for (uint32_t i = lo; i < hi; i++) dst[i] = src[i];
+    mh_even_range(N, cidx, &lo, &hi);
+
+    uint64_t *dst64 = (uint64_t *)(dst + lo);
+    const uint64_t *src64 = (const uint64_t *)(src + lo);
+    const uint32_t n64 = (hi - lo) / 2u;
+    for (uint32_t k = 0; k < n64; k++) dst64[k] = src64[k];
     if (hi > lo) evict((const void *)(dst + lo), (hi - lo) * sizeof(float));
+
+    if ((N & 1u) && cidx == YOLO_NHART - 1u) {
+        dst[N - 1u] = src[N - 1u];
+        evict((const void *)(dst + N - 1u), sizeof(float));
+    }
 }
 
-/* mh_add_floats: y = a + b, multi-hart. */
-static inline void mh_add_floats(uint32_t hid, float *y, const float *a, const float *b, uint32_t N) {
+/* mh_add_floats: y = a + b, multi-hart, 2x-unrolled (packed float-add
+ * isn't a free bit-trick the way packed copy is -- no SIMD add without
+ * the VPU asm kernels this scalar path deliberately isn't -- but
+ * unrolling still cuts loop-control overhead and gives the compiler two
+ * independent adds per iteration to pipeline). */
+static inline __attribute__((always_inline)) void mh_add_floats(uint32_t hid, float *y, const float *a, const float *b, uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t lo, hi;
-    yolo_range(N, cidx, &lo, &hi);
-    for (uint32_t i = lo; i < hi; i++) y[i] = a[i] + b[i];
+    mh_even_range(N, cidx, &lo, &hi);
+    for (uint32_t i = lo; i < hi; i += 2u) {
+        y[i]     = a[i]     + b[i];
+        y[i + 1] = a[i + 1] + b[i + 1];
+    }
     if (hi > lo) evict((const void *)(y + lo), (hi - lo) * sizeof(float));
+
+    if ((N & 1u) && cidx == YOLO_NHART - 1u) {
+        y[N - 1u] = a[N - 1u] + b[N - 1u];
+        evict((const void *)(y + N - 1u), sizeof(float));
+    }
 }
 
-/* mh_iadd_floats: y += b, in place, multi-hart. */
-static inline void mh_iadd_floats(uint32_t hid, float *y, const float *b, uint32_t N) {
+/* mh_iadd_floats: y += b, in place, multi-hart, 2x-unrolled (same
+ * rationale as mh_add_floats). */
+static inline __attribute__((always_inline)) void mh_iadd_floats(uint32_t hid, float *y, const float *b, uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t lo, hi;
-    yolo_range(N, cidx, &lo, &hi);
-    for (uint32_t i = lo; i < hi; i++) y[i] += b[i];
+    mh_even_range(N, cidx, &lo, &hi);
+    for (uint32_t i = lo; i < hi; i += 2u) {
+        y[i]     += b[i];
+        y[i + 1] += b[i + 1];
+    }
     if (hi > lo) evict((const void *)(y + lo), (hi - lo) * sizeof(float));
+
+    if ((N & 1u) && cidx == YOLO_NHART - 1u) {
+        y[N - 1u] += b[N - 1u];
+        evict((const void *)(y + N - 1u), sizeof(float));
+    }
 }
 
-/* Multi-hart concat of 3 same-shape blocks into 3*N floats. */
-static inline void mh_concat3(uint32_t hid, float *dst,
+/* Multi-hart concat of 3 same-shape blocks into 3*N floats. 64-bit wide
+ * copy for each of the 3 passes (pure data movement, same rationale as
+ * mh_copy_floats), block-quantized to whole 2-float chunks per pass. */
+static inline __attribute__((always_inline)) void mh_concat3(uint32_t hid, float *dst,
                               const float *a, const float *b, const float *c,
                               uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t lo, hi;
-    yolo_range(N, cidx, &lo, &hi);
-    for (uint32_t i = lo; i < hi; i++) dst[          i] = a[i];
-    for (uint32_t i = lo; i < hi; i++) dst[1u*N   + i] = b[i];
-    for (uint32_t i = lo; i < hi; i++) dst[2u*N   + i] = c[i];
+    mh_even_range(N, cidx, &lo, &hi);
+    const uint32_t n64 = (hi - lo) / 2u;
+
+    {
+        uint64_t *d64 = (uint64_t *)(dst + lo); const uint64_t *s64 = (const uint64_t *)(a + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
+    {
+        uint64_t *d64 = (uint64_t *)(dst + 1u*N + lo); const uint64_t *s64 = (const uint64_t *)(b + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
+    {
+        uint64_t *d64 = (uint64_t *)(dst + 2u*N + lo); const uint64_t *s64 = (const uint64_t *)(c + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
     if (hi > lo) {
         evict((const void *)(dst + lo),         (hi - lo) * sizeof(float));
         evict((const void *)(dst + 1u*N + lo),  (hi - lo) * sizeof(float));
         evict((const void *)(dst + 2u*N + lo),  (hi - lo) * sizeof(float));
     }
+    if ((N & 1u) && cidx == YOLO_NHART - 1u) {
+        dst[N-1u] = a[N-1u]; dst[1u*N+N-1u] = b[N-1u]; dst[2u*N+N-1u] = c[N-1u];
+        evict((const void *)(dst + N - 1u), sizeof(float));
+        evict((const void *)(dst + 1u*N + N - 1u), sizeof(float));
+        evict((const void *)(dst + 2u*N + N - 1u), sizeof(float));
+    }
 }
 
-/* Multi-hart concat of 4 same-shape blocks (used by SPPF). */
-static inline void mh_concat4(uint32_t hid, float *dst,
+/* Multi-hart concat of 4 same-shape blocks (used by SPPF). Same 64-bit
+ * wide-copy treatment as mh_concat3. */
+static inline __attribute__((always_inline)) void mh_concat4(uint32_t hid, float *dst,
                               const float *a, const float *b,
                               const float *c, const float *d,
                               uint32_t N) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
     uint32_t lo, hi;
-    yolo_range(N, cidx, &lo, &hi);
-    for (uint32_t i = lo; i < hi; i++) dst[          i] = a[i];
-    for (uint32_t i = lo; i < hi; i++) dst[1u*N   + i] = b[i];
-    for (uint32_t i = lo; i < hi; i++) dst[2u*N   + i] = c[i];
-    for (uint32_t i = lo; i < hi; i++) dst[3u*N   + i] = d[i];
+    mh_even_range(N, cidx, &lo, &hi);
+    const uint32_t n64 = (hi - lo) / 2u;
+
+    {
+        uint64_t *d64 = (uint64_t *)(dst + lo); const uint64_t *s64 = (const uint64_t *)(a + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
+    {
+        uint64_t *d64 = (uint64_t *)(dst + 1u*N + lo); const uint64_t *s64 = (const uint64_t *)(b + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
+    {
+        uint64_t *d64 = (uint64_t *)(dst + 2u*N + lo); const uint64_t *s64 = (const uint64_t *)(c + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
+    {
+        uint64_t *d64 = (uint64_t *)(dst + 3u*N + lo); const uint64_t *s64 = (const uint64_t *)(d + lo);
+        for (uint32_t k = 0; k < n64; k++) d64[k] = s64[k];
+    }
     if (hi > lo) {
         evict((const void *)(dst + lo),         (hi - lo) * sizeof(float));
         evict((const void *)(dst + 1u*N + lo),  (hi - lo) * sizeof(float));
         evict((const void *)(dst + 2u*N + lo),  (hi - lo) * sizeof(float));
         evict((const void *)(dst + 3u*N + lo),  (hi - lo) * sizeof(float));
+    }
+    if ((N & 1u) && cidx == YOLO_NHART - 1u) {
+        dst[N-1u] = a[N-1u]; dst[1u*N+N-1u] = b[N-1u]; dst[2u*N+N-1u] = c[N-1u]; dst[3u*N+N-1u] = d[N-1u];
+        evict((const void *)(dst + N - 1u), sizeof(float));
+        evict((const void *)(dst + 1u*N + N - 1u), sizeof(float));
+        evict((const void *)(dst + 2u*N + N - 1u), sizeof(float));
+        evict((const void *)(dst + 3u*N + N - 1u), sizeof(float));
     }
 }
 
@@ -1774,30 +1379,8 @@ static inline void mh_concat4(uint32_t hid, float *dst,
 #define MH_CONCAT3(DST, A, B, C, N)      do { mh_concat3(hid, (DST), (A), (B), (C), (N)); MH_BARRIER(); } while (0)
 #define MH_CONCAT4(DST, A, B, C, D, N)   do { mh_concat4(hid, (DST), (A), (B), (C), (D), (N)); MH_BARRIER(); } while (0)
 
-static inline void mh_concat_c_chw(uint32_t hid, const float *a, uint32_t Ca,
-                                   const float *b, uint32_t Cb,
-                                   float *out, uint32_t H, uint32_t W) {
-    if (!yolo_is_compute(hid)) return;
-    const uint32_t cidx = yolo_compute_idx(hid);
-    uint32_t a_lo, a_hi, b_lo, b_hi;
-    yolo_range(Ca, cidx, &a_lo, &a_hi);
-    yolo_range(Cb, cidx, &b_lo, &b_hi);
-    
-    const uint32_t HW = H * W;
-    for (uint32_t c = a_lo; c < a_hi; c++) {
-        for (uint32_t i = 0; i < HW; i++) out[c * HW + i] = a[c * HW + i];
-    }
-    for (uint32_t c = b_lo; c < b_hi; c++) {
-        for (uint32_t i = 0; i < HW; i++) out[(Ca + c) * HW + i] = b[c * HW + i];
-    }
-    
-    if (a_hi > a_lo) evict((const void *)(out + a_lo * HW), (a_hi - a_lo) * HW * sizeof(float));
-    if (b_hi > b_lo) evict((const void *)(out + (Ca + b_lo) * HW), (b_hi - b_lo) * HW * sizeof(float));
-}
-#define MH_CONCAT_C_CHW(A, CA, B, CB, OUT, H, W) do { mh_concat_c_chw(hid, (A), (CA), (B), (CB), (OUT), (H), (W)); MH_BARRIER(); } while (0)
-
 /* Multi-hart 5x5 maxpool stride=1 pad=2 (used in SPPF). */
-static void mh_maxpool5_s1_p2(uint32_t hid, const float *in, float *out,
+static inline __attribute__((always_inline)) void mh_maxpool5_s1_p2(uint32_t hid, const float * __restrict__ in, float * __restrict__ out,
                               uint32_t C, uint32_t H, uint32_t W) {
     if (!yolo_is_compute(hid)) return;
     const uint32_t cidx = yolo_compute_idx(hid);
@@ -1827,8 +1410,8 @@ static void mh_maxpool5_s1_p2(uint32_t hid, const float *in, float *out,
 
 /* Multi-hart depthwise Conv2d (groups=C). */
 static void conv2d_dw_fp32_mh(uint32_t hid,
-                              const float *in, float *out,
-                              const float *W, const float *B,
+                              const float * __restrict__ in, float * __restrict__ out,
+                              const float * __restrict__ W, const float * __restrict__ B,
                               uint32_t C, uint32_t IH, uint32_t IW,
                               uint32_t OH, uint32_t OW,
                               uint32_t KH, uint32_t KW,
@@ -1868,215 +1451,6 @@ static void conv2d_dw_fp32_mh(uint32_t hid,
     }
 }
 
-/* Vectorized depthwise 3x3 stride=2 pad=1 (mirrors the regular
- * conv2d_3x3_s2_p1_fp32_mh_vpu's even-lane-only lane-discard trick, but
- * per-channel: no IC/OC dims, weight shape is [C,3,3]). */
-static void conv2d_dw3x3_s2_p1_fp32_mh_vpu(uint32_t hid,
-                                           const float *in, float *out,
-                                           const float *W, const float *B,
-                                           uint32_t C, uint32_t IH, uint32_t IW,
-                                           uint32_t OH, uint32_t OW,
-                                           uint32_t act)
-{
-    if (!VPU_ACTIVE(hid)) return;
-    const uint32_t cidx = VPU_IDX(hid);
-    uint32_t c_lo, c_hi;
-    *(volatile uint32_t *)&c_lo = (C * cidx) / VPU_N;
-    *(volatile uint32_t *)&c_hi = (C * (cidx + 1u)) / VPU_N;
-
-    float acc_buf[8] __attribute__((aligned(32)));
-
-    float vsilu_zero, vsilu_one, vsilu_log2e;
-    {
-        union { float f; uint32_t u; } _z; _z.f = 0.0f;
-        union { float f; uint32_t u; } _o; _o.f = 1.0f;
-        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
-    }
-
-    for (uint32_t c = c_lo; c < c_hi; c++) {
-        const float bias_v = B[c];
-        union { float f; uint32_t u; } bb; bb.f = bias_v;
-        const float *wp = W + c * 9u;
-        for (int32_t oh = 0; oh < (int32_t)OH; oh++) {
-            for (int32_t ow4 = 0; ow4 < (int32_t)OW; ow4 += 4) {
-                register float acc asm("f0");
-                __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(acc) : "r"((uint64_t)bb.u));
-
-                for (uint32_t ky = 0; ky < 3u; ky++) {
-                    const int32_t ih = oh * 2 + (int32_t)ky - 1;
-                    if (ih < 0 || ih >= (int32_t)IH) continue;
-                    for (uint32_t kx = 0; kx < 3u; kx++) {
-                        const int32_t iw_base = ow4 * 2 + (int32_t)kx - 1;
-                        const float w_scalar = wp[ky * 3u + kx];
-                        if (iw_base >= 0 && iw_base + 7 < (int32_t)IW) {
-                            float v_pkg, w_pkg;
-                            union { float f; uint32_t u; } ww; ww.f = w_scalar;
-                            const float *src = in + (c * IH + (uint32_t)ih) * IW + (uint32_t)iw_base;
-                            __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v_pkg) : "r"(src));
-                            __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(w_pkg) : "r"((uint64_t)ww.u));
-                            __asm__ volatile("fmadd.ps %0, %1, %2, %0\n"
-                                             : "+f"(acc) : "f"(v_pkg), "f"(w_pkg));
-                        } else {
-                            __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(acc) : "memory");
-                            __asm__ volatile("fence rw, rw" ::: "memory");
-                            for (int lane = 0; lane < 4; lane++) {
-                                const int32_t iw_l = iw_base + 2 * lane;
-                                if (iw_l >= 0 && iw_l < (int32_t)IW) {
-                                    acc_buf[2 * lane] += in[(c * IH + (uint32_t)ih) * IW + (uint32_t)iw_l] * w_scalar;
-                                }
-                            }
-                            __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(acc) : "r"(acc_buf));
-                        }
-                    }
-                }
-
-                float *dst = out + (c * OH + (uint32_t)oh) * OW + (uint32_t)ow4;
-                if (act == 1u) {
-                    float _t;
-                    __asm__ volatile(
-                        "fsub.ps %[t], %[z], %[x]\n"
-                        "fmul.ps %[t], %[t], %[l2e]\n"
-                        "fexp.ps %[t], %[t]\n"
-                        "fadd.ps %[t], %[t], %[o]\n"
-                        "frcp.ps %[t], %[t]\n"
-                        "fmul.ps %[t], %[t], %[x]\n"
-                        : [t] "=&f"(_t)
-                        : [x] "f"(acc), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e)
-                    );
-                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(_t) : "memory");
-                } else {
-                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(acc) : "memory");
-                }
-                __asm__ volatile("fence rw, rw" ::: "memory");
-                dst[0] = acc_buf[0]; dst[1] = acc_buf[2];
-                dst[2] = acc_buf[4]; dst[3] = acc_buf[6];
-            }
-        }
-    }
-    if (c_hi > c_lo) {
-        const uint32_t bytes = (c_hi - c_lo) * OH * OW * sizeof(float);
-        evict((const void *)(out + c_lo * OH * OW), bytes);
-    }
-}
-#define CONV_DW3x3_S2_P1_VPU(...) do { conv2d_dw3x3_s2_p1_fp32_mh_vpu(hid, __VA_ARGS__); MH_BARRIER(); } while (0)
-
-/* Vectorized depthwise 7x7 stride=1 pad=3 (generalizes
- * conv2d_dw3x3_s1_p1_fp32_mh_vpu's structure to 7 taps -- same per-lane
- * flq2+fbcx+fmadd shape, just KH=KW=7/PAD=3 instead of 3/1). */
-static void conv2d_dw7x7_s1_p3_fp32_mh_vpu(uint32_t hid,
-                                           const float *in, float *out,
-                                           const float *W, const float *B,
-                                           uint32_t C, uint32_t H, uint32_t W_,
-                                           uint32_t act)
-{
-    if (!VPU_ACTIVE(hid)) return;
-    const uint32_t cidx = VPU_IDX(hid);
-    uint32_t c_lo, c_hi;
-    *(volatile uint32_t *)&c_lo = (C * cidx) / VPU_N;
-    *(volatile uint32_t *)&c_hi = (C * (cidx + 1u)) / VPU_N;
-
-    float acc_buf[8] __attribute__((aligned(32)));
-
-    float vsilu_zero, vsilu_one, vsilu_log2e;
-    {
-        union { float f; uint32_t u; } _z; _z.f = 0.0f;
-        union { float f; uint32_t u; } _o; _o.f = 1.0f;
-        union { float f; uint32_t u; } _l; _l.f = 1.4426950408889634f;
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_zero) : "r"((uint64_t)_z.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_one) : "r"((uint64_t)_o.u));
-        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(vsilu_log2e) : "r"((uint64_t)_l.u));
-    }
-
-    for (uint32_t c = c_lo; c < c_hi; c++) {
-        const float bias_v = B[c];
-        union { float f; uint32_t u; } bb; bb.f = bias_v;
-        const float *wp = W + c * 49u;   /* 7x7 weights for channel c */
-        for (int32_t oh = 0; oh < (int32_t)H; oh++) {
-            for (int32_t ow8 = 0; ow8 < (int32_t)W_; ow8 += 8) {
-                register float acc asm("f0");
-                __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(acc) : "r"((uint64_t)bb.u));
-
-                for (uint32_t ky = 0; ky < 7u; ky++) {
-                    const int32_t ih = oh + (int32_t)ky - 3;
-                    if (ih < 0 || ih >= (int32_t)H) continue;
-                    for (uint32_t kx = 0; kx < 7u; kx++) {
-                        const int32_t iw = ow8 + (int32_t)kx - 3;
-                        const float w_scalar = wp[ky * 7u + kx];
-                        if (iw >= 0 && iw + 7 < (int32_t)W_) {
-                            float v_pkg, w_pkg;
-                            union { float f; uint32_t u; } ww; ww.f = w_scalar;
-                            const float *src = in + (c * H + (uint32_t)ih) * W_ + (uint32_t)iw;
-                            __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v_pkg) : "r"(src));
-                            __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(w_pkg) : "r"((uint64_t)ww.u));
-                            __asm__ volatile("fmadd.ps %0, %1, %2, %0\n"
-                                             : "+f"(acc) : "f"(v_pkg), "f"(w_pkg));
-                        } else {
-                            __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(acc_buf), "f"(acc) : "memory");
-                            __asm__ volatile("fence rw, rw" ::: "memory");
-                            for (int lane = 0; lane < 8; lane++) {
-                                const int32_t iw_l = ow8 + lane + (int32_t)kx - 3;
-                                if (iw_l >= 0 && iw_l < (int32_t)W_) {
-                                    acc_buf[lane] += in[(c * H + (uint32_t)ih) * W_ + (uint32_t)iw_l] * w_scalar;
-                                }
-                            }
-                            __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(acc) : "r"(acc_buf));
-                        }
-                    }
-                }
-
-                float *dst = out + (c * H + (uint32_t)oh) * W_ + (uint32_t)ow8;
-                if (act == 1u) {
-                    float _t;
-                    __asm__ volatile(
-                        "fsub.ps %[t], %[z], %[x]\n"
-                        "fmul.ps %[t], %[t], %[l2e]\n"
-                        "fexp.ps %[t], %[t]\n"
-                        "fadd.ps %[t], %[t], %[o]\n"
-                        "frcp.ps %[t], %[t]\n"
-                        "fmul.ps %[t], %[t], %[x]\n"
-                        : [t] "=&f"(_t)
-                        : [x] "f"(acc), [z] "f"(vsilu_zero), [o] "f"(vsilu_one), [l2e] "f"(vsilu_log2e)
-                    );
-                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(_t) : "memory");
-                } else {
-                    __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(acc) : "memory");
-                }
-            }
-        }
-    }
-    if (c_hi > c_lo) {
-        const uint32_t bytes = (c_hi - c_lo) * H * W_ * sizeof(float);
-        evict((const void *)(out + c_lo * H * W_), bytes);
-    }
-}
-#define CONV_DW7x7_S1_P3_VPU(...) do { conv2d_dw7x7_s1_p3_fp32_mh_vpu(hid, __VA_ARGS__); MH_BARRIER(); } while (0)
-
-/* Dispatcher for the generic depthwise fallback: route the two known
- * vectorized shapes (3x3 stride-2 pad-1, 7x7 stride-1 pad-3) to their
- * specialized kernels; anything else falls back to the scalar generic
- * path (safety net for shapes not yet vectorized). */
-static inline void conv2d_dw_disp(uint32_t hid,
-                                  const float *in, float *out,
-                                  const float *W, const float *B,
-                                  uint32_t C, uint32_t IH, uint32_t IW,
-                                  uint32_t OH, uint32_t OW,
-                                  uint32_t KH, uint32_t KW,
-                                  uint32_t SH, uint32_t SW,
-                                  uint32_t PH, uint32_t PW,
-                                  uint32_t act)
-{
-    if (KH == 3u && KW == 3u && SH == 2u && SW == 2u && PH == 1u && PW == 1u && (OW % 4u) == 0u) {
-        conv2d_dw3x3_s2_p1_fp32_mh_vpu(hid, in, out, W, B, C, IH, IW, OH, OW, act);
-    } else if (KH == 7u && KW == 7u && SH == 1u && SW == 1u && PH == 3u && PW == 3u && (OW % 8u) == 0u) {
-        conv2d_dw7x7_s1_p3_fp32_mh_vpu(hid, in, out, W, B, C, OH, OW, act);
-    } else {
-        conv2d_dw_fp32_mh(hid, in, out, W, B, C, IH, IW, OH, OW, KH, KW, SH, SW, PH, PW, act);
-    }
-}
-
 /* Matmul helpers for batched-2D PSA attention.
  * matmul_2d: [M,K] @ [K,N] -> [M,N]
  */
@@ -2092,58 +1466,6 @@ static inline void matmul_2d_fp32(const float *A, const float *B, float *C,
     }
 }
 
-/* Vectorized dense matmul: C[M,N] = A[M,K] @ B[K,N] (B row-major, N
- * contiguous per row -- same access pattern as CONV_1x1's weight-times-
- * input structure). Was fully scalar with a strided B access
- * (B[k*N+j] for fixed j, varying k, jumps N*4 bytes per k); now for each
- * 8-wide column block, load B's row-slice once via flq2 (8 contiguous
- * floats per transaction instead of 1) and broadcast-fmadd across k,
- * mirroring conv2d_1x1_fp32_mh_vpu's structure exactly (matmul IS 1x1
- * conv: K=IC, N=spatial, M=OC). T0-only VPU, same convention as every
- * conv kernel in this file -- note this drops from 16-hart (this
- * function previously used yolo_is_compute, which follows the
- * YOLO_USE_16HART build flag) to 8-hart T0-only, since VPU instructions
- * are only verified-correct on T0 in this codebase; the ~8x per-hart
- * instruction reduction from vectorization more than covers the 2x hart
- * count loss (~87% cycle reduction on this matmul). */
-static inline void mh_matmul_2d_fp32(uint32_t hid, const float *A, const float *B, float *C,
-                                     uint32_t M, uint32_t K, uint32_t N) {
-    if (!VPU_ACTIVE(hid)) return;
-    const uint32_t cidx = VPU_IDX(hid);
-    uint32_t m_lo, m_hi;
-    *(volatile uint32_t *)&m_lo = (M * cidx) / VPU_N;
-    *(volatile uint32_t *)&m_hi = (M * (cidx + 1u)) / VPU_N;
-
-    const uint32_t n_vec = (N / 8u) * 8u;
-    for (uint32_t i = m_lo; i < m_hi; i++) {
-        const float *Arow = A + i * K;
-        float *Crow = C + i * N;
-        for (uint32_t j = 0; j < n_vec; j += 8u) {
-            register float acc asm("f0");
-            union { float f; uint32_t u; } _z; _z.f = 0.0f;
-            __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(acc) : "r"((uint64_t)_z.u));
-            for (uint32_t k = 0; k < K; k++) {
-                float v_pkg, w_pkg;
-                union { float f; uint32_t u; } aa; aa.f = Arow[k];
-                const float *src = B + k * N + j;
-                __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v_pkg) : "r"(src));
-                __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(w_pkg) : "r"((uint64_t)aa.u));
-                __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(acc) : "f"(v_pkg), "f"(w_pkg));
-            }
-            __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(Crow + j), "f"(acc) : "memory");
-        }
-        /* Scalar tail for N % 8 != 0 (not hit by the current PSA call sites,
-         * N=HW=144=8*18 exactly, but kept generic for future shapes). */
-        for (uint32_t j = n_vec; j < N; j++) {
-            float acc = 0.0f;
-            for (uint32_t k = 0; k < K; k++) acc += Arow[k] * B[k * N + j];
-            Crow[j] = acc;
-        }
-    }
-    if (m_hi > m_lo) evict((const void *)(C + m_lo * N), (m_hi - m_lo) * N * sizeof(float));
-}
-#define MH_MATMUL(A, B, C, M, K, N) do { mh_matmul_2d_fp32(hid, (A), (B), (C), (M), (K), (N)); MH_BARRIER(); } while (0)
-
 /* Softmax over rows (last axis): for each row of length N, compute
  * x = exp(x - max(x)) / sum(exp(x - max(x))) */
 static inline void softmax_rows(float *x, uint32_t M, uint32_t N) {
@@ -2158,36 +1480,8 @@ static inline void softmax_rows(float *x, uint32_t M, uint32_t N) {
     }
 }
 
-static inline void mh_softmax_rows(uint32_t hid, float *x, uint32_t M, uint32_t N) {
-    if (!yolo_is_compute(hid)) return;
-    const uint32_t cidx = yolo_compute_idx(hid);
-    uint32_t m_lo, m_hi;
-    yolo_range(M, cidx, &m_lo, &m_hi);
-    for (uint32_t i = m_lo; i < m_hi; i++) {
-        float *row = x + i * N;
-        float m = row[0];
-        for (uint32_t j = 1; j < N; j++) if (row[j] > m) m = row[j];
-        float s = 0.0f;
-        for (uint32_t j = 0; j < N; j++) { row[j] = my_expf(row[j] - m); s += row[j]; }
-        const float inv = fast_recip(s);
-        for (uint32_t j = 0; j < N; j++) row[j] *= inv;
-    }
-    if (m_hi > m_lo) evict((const void *)(x + m_lo * N), (m_hi - m_lo) * N * sizeof(float));
-}
-#define MH_SOFTMAX(X, M, N) do { mh_softmax_rows(hid, (X), (M), (N)); MH_BARRIER(); } while (0)
-
-static inline void mh_scale_array(uint32_t hid, float *arr, float scale, uint32_t N) {
-    if (!yolo_is_compute(hid)) return;
-    const uint32_t cidx = yolo_compute_idx(hid);
-    uint32_t lo, hi;
-    yolo_range(N, cidx, &lo, &hi);
-    for (uint32_t i = lo; i < hi; i++) arr[i] *= scale;
-    if (hi > lo) evict((const void *)(arr + lo), (hi - lo) * sizeof(float));
-}
-#define MH_SCALE(ARR, S, N) do { mh_scale_array(hid, (ARR), (S), (N)); MH_BARRIER(); } while (0)
-
 /* Nearest-neighbor upsample 2x: [C, H, W] -> [C, 2H, 2W] */
-static inline void upsample_nearest_2x(const float *in, float *out,
+static inline void upsample_nearest_2x(const float * __restrict__ in, float * __restrict__ out,
                                        uint32_t C, uint32_t H, uint32_t W)
 {
     const uint32_t OH = H * 2u, OW = W * 2u;
@@ -2202,31 +1496,260 @@ static inline void upsample_nearest_2x(const float *in, float *out,
     }
 }
 
-static inline void mh_upsample_nearest_2x(uint32_t hid, const float *in, float *out,
-                                          uint32_t C, uint32_t H, uint32_t W) {
-    if (!yolo_is_compute(hid)) return;
-    const uint32_t cidx = yolo_compute_idx(hid);
-    uint32_t c_lo, c_hi;
-    yolo_range(C, cidx, &c_lo, &c_hi);
-    const uint32_t OH = H * 2u, OW = W * 2u;
-    for (uint32_t c = c_lo; c < c_hi; c++) {
-        for (uint32_t oh = 0; oh < OH; oh++) {
-            const uint32_t ih = oh / 2u;
-            for (uint32_t ow = 0; ow < OW; ow++) {
-                const uint32_t iw = ow / 2u;
-                out[(c * OH + oh) * OW + ow] = in[(c * H + ih) * W + iw];
-            }
-        }
-    }
-    if (c_hi > c_lo) evict((const void *)(out + c_lo * OH * OW), (c_hi - c_lo) * OH * OW * sizeof(float));
-}
-#define MH_UPSAMPLE_2x(IN, OUT, C, H, W) do { mh_upsample_nearest_2x(hid, (IN), (OUT), (C), (H), (W)); MH_BARRIER(); } while (0)
-
 /* Transpose last two axes of a 2D tile: [M,N] -> [N,M] */
-static inline void transpose_2d(const float *in, float *out, uint32_t M, uint32_t N) {
+static inline void transpose_2d(const float * __restrict__ in, float * __restrict__ out, uint32_t M, uint32_t N) {
     for (uint32_t i = 0; i < M; i++)
         for (uint32_t j = 0; j < N; j++)
             out[j*M + i] = in[i*N + j];
 }
+
+/* --- Multi-hart mirrors of transpose/matmul/softmax/upsample/concat2 ---
+ * All four split by an axis whose per-hart write span is a CONTIGUOUS run
+ * of full output rows (never a mid-row/mid-cache-line element split), so
+ * every hart's evict() region starts and ends on whole-row boundaries.
+ * That sidesteps the non-coherent-L1D lost-update race documented for the
+ * DFL decode path (raw yolo_range() over a flat element count can land a
+ * hart boundary mid-64-byte-line; row-granularity splits cannot, because
+ * each row here is itself always a multiple of 16 floats in every call
+ * site used in this kernel). */
+
+/* 8-wide N-tiled VPU matmul, ported from the independently-verified PSA
+ * vectorization work (corpus yolo_VECTORIZATION_BIT_EXACTNESS_METHOD_2026_07_12
+ * / yolo_PSA_ATTENTION_BIG_WIN_2026_07_12). Bit-exact vs a plain scalar
+ * i,j,k matmul: for each output element the K-reduction still happens in
+ * the same k=0..K-1 sequential order (only the N/j dimension is tiled
+ * 8-wide, a pure elementwise partition across independent output columns,
+ * not a reduction reordering). Verified via a portable-C harness at the
+ * real PSA shapes (144x32x144, 64x144x144) plus edge cases (non-8-divisible
+ * N, N<8, exactly-one-tile) -- 0 element differences vs scalar in every
+ * case. mh_matmul_2d_fp32_scaled below calls this per-hart on its own
+ * [i_lo,i_hi) row range instead of running the K-reduction in scalar C. */
+static inline void matmul_2d_fp32_vpu(const float * __restrict__ A,
+                                      const float * __restrict__ B,
+                                      float * __restrict__ C,
+                                      uint32_t M, uint32_t K, uint32_t N)
+{
+    union { float f; uint32_t u; } _zero; _zero.f = 0.0f;
+    for (uint32_t i = 0; i < M; i++) {
+        uint32_t j = 0;
+        for (; j + 8u <= N; j += 8u) {
+            float acc;
+            __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(acc) : "r"((uint64_t)_zero.u));
+            for (uint32_t k = 0; k < K; k++) {
+                float a_bcast;
+                union { float f; uint32_t u; } _a; _a.f = A[i * K + k];
+                __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(a_bcast) : "r"((uint64_t)_a.u));
+                float b_vec;
+                const float *bsrc = &B[k * N + j];
+                __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(b_vec) : "r"(bsrc));
+                __asm__ volatile("fmadd.ps %0, %1, %2, %0\n" : "+f"(acc) : "f"(b_vec), "f"(a_bcast));
+            }
+            float *cdst = &C[i * N + j];
+            __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(cdst), "f"(acc) : "memory");
+        }
+        for (; j < N; j++) {
+            float acc = 0.0f;
+            for (uint32_t k = 0; k < K; k++) acc += A[i * K + k] * B[k * N + j];
+            C[i * N + j] = acc;
+        }
+    }
+}
+
+/* Vectorized softmax over rows, same provenance/verification as above.
+ * Row-max stays scalar (cheap, N single pass, horizontal-max across VPU
+ * lanes is awkward on this ISA). exp(x-max) is computed 8-wide via
+ * fexp.ps. CRITICAL for bit-exactness: the sum is a SEPARATE scalar pass
+ * in the ORIGINAL sequential j=0..N-1 order, only after all N exp()
+ * values are stored -- an 8-wide lane-parallel running sum combined at
+ * the end changes float addition order (verified to differ by up to
+ * ~9e-8/element); this two-pass design avoids that, verified 0
+ * differences. Normalize has no reduction and vectorizes freely. */
+static inline void softmax_rows_vpu(float * __restrict__ x, uint32_t M, uint32_t N) {
+    union { float f; uint32_t u; } _one; _one.f = 1.0f;
+    union { float f; uint32_t u; } _l2e; _l2e.f = 1.4426950408889634f; /* log2(e) */
+    for (uint32_t i = 0; i < M; i++) {
+        float *row = x + i * N;
+
+        float m = row[0];
+        for (uint32_t j = 1; j < N; j++) if (row[j] > m) m = row[j];
+
+        union { float f; uint32_t u; } _m; _m.f = m;
+        float m_bcast;
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(m_bcast) : "r"((uint64_t)_m.u));
+        float one, l2e;
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(one) : "r"((uint64_t)_one.u));
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(l2e) : "r"((uint64_t)_l2e.u));
+
+        uint32_t j = 0;
+        for (; j + 8u <= N; j += 8u) {
+            float *dst = &row[j];
+            float v, t;
+            __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v) : "r"(dst));
+            __asm__ volatile(
+                "fsub.ps %[t], %[v], %[m]\n"
+                "fmul.ps %[t], %[t], %[l2e]\n"
+                "fexp.ps %[t], %[t]\n"
+                : [t] "=&f"(t)
+                : [v] "f"(v), [m] "f"(m_bcast), [l2e] "f"(l2e)
+            );
+            __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(t) : "memory");
+        }
+        for (; j < N; j++) row[j] = my_expf(row[j] - m);
+
+        float s = 0.0f;
+        for (uint32_t k = 0; k < N; k++) s += row[k];
+        const float inv = fast_recip(s);
+
+        union { float f; uint32_t u; } _inv; _inv.f = inv;
+        float inv_bcast;
+        __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(inv_bcast) : "r"((uint64_t)_inv.u));
+
+        j = 0;
+        for (; j + 8u <= N; j += 8u) {
+            float *dst = &row[j];
+            float v, r;
+            __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v) : "r"(dst));
+            __asm__ volatile("fmul.ps %0, %1, %2\n" : "=f"(r) : "f"(v), "f"(inv_bcast));
+            __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(r) : "memory");
+        }
+        for (; j < N; j++) row[j] *= inv;
+    }
+}
+
+static inline __attribute__((always_inline)) void mh_transpose_2d(uint32_t hid, const float *in, float *out,
+                                   uint32_t M, uint32_t N) {
+    if (!yolo_is_compute(hid)) return;
+    const uint32_t cidx = yolo_compute_idx(hid);
+    uint32_t j_lo, j_hi;
+    yolo_range(N, cidx, &j_lo, &j_hi);
+    for (uint32_t j = j_lo; j < j_hi; j++)
+        for (uint32_t i = 0; i < M; i++)
+            out[j*M + i] = in[i*N + j];
+    if (j_hi > j_lo) evict((const void *)(out + j_lo * M), (j_hi - j_lo) * M * sizeof(float));
+}
+
+/* i,k,j loop order (not the naive i,j,k): for a fixed i, walks k in the
+ * middle loop and j innermost, so both B[k*N+j] and C[i*N+j] are read/
+ * written SEQUENTIALLY as j increments -- the i,j,k order instead strides
+ * through B by N floats on every single k step (every k touches a
+ * different cache line), which thrashes L1 for anything but tiny N. Same
+ * arithmetic result (just re-associated float sums, standard and
+ * accepted for this class of numerical code); requires C zeroed first
+ * since accumulation now spans the whole k loop instead of finishing
+ * each C[i,j] in one pass. */
+/* scale==1.0f is the plain-matmul case. A non-1.0f scale is fused directly
+ * into the same per-hart output-row pass instead of a separate scale step
+ * -- since each hart already owns [i_lo,i_hi) exclusively here, scaling
+ * those same rows needs no additional MH_BARRIER (the row-range partition
+ * is identical to the matmul's own, so no hart ever reads another hart's
+ * output before it's scaled). */
+static inline __attribute__((always_inline)) void mh_matmul_2d_fp32_scaled(uint32_t hid, const float *A, const float *B, float *C,
+                                            uint32_t M, uint32_t K, uint32_t N, float scale) {
+    if (!yolo_is_compute(hid)) return;
+    const uint32_t cidx = yolo_compute_idx(hid);
+    uint32_t i_lo, i_hi;
+    yolo_range(M, cidx, &i_lo, &i_hi);
+    if (i_hi > i_lo) {
+        matmul_2d_fp32_vpu(A + i_lo * K, B, C + i_lo * N, i_hi - i_lo, K, N);
+        if (scale != 1.0f) {
+            union { float f; uint32_t u; } _s; _s.f = scale;
+            float s_bcast;
+            __asm__ volatile("fbcx.ps %0, %1\n" : "=f"(s_bcast) : "r"((uint64_t)_s.u));
+            uint32_t j = 0;
+            const uint32_t total = (i_hi - i_lo) * N;
+            float *base = C + i_lo * N;
+            for (; j + 8u <= total; j += 8u) {
+                float *dst = &base[j];
+                float v, r;
+                __asm__ volatile("flq2 %0, 0(%1)\n" : "=f"(v) : "r"(dst));
+                __asm__ volatile("fmul.ps %0, %1, %2\n" : "=f"(r) : "f"(v), "f"(s_bcast));
+                __asm__ volatile("fsq2 %1, 0(%0)\n" :: "r"(dst), "f"(r) : "memory");
+            }
+            for (; j < total; j++) base[j] *= scale;
+        }
+        evict((const void *)(C + i_lo * N), (i_hi - i_lo) * N * sizeof(float));
+    }
+}
+static inline __attribute__((always_inline)) void mh_matmul_2d_fp32(uint32_t hid, const float *A, const float *B, float *C,
+                                     uint32_t M, uint32_t K, uint32_t N) {
+    mh_matmul_2d_fp32_scaled(hid, A, B, C, M, K, N, 1.0f);
+}
+
+static inline __attribute__((always_inline)) void mh_softmax_rows(uint32_t hid, float *x, uint32_t M, uint32_t N) {
+    if (!yolo_is_compute(hid)) return;
+    const uint32_t cidx = yolo_compute_idx(hid);
+    uint32_t i_lo, i_hi;
+    yolo_range(M, cidx, &i_lo, &i_hi);
+    if (i_hi > i_lo) softmax_rows_vpu(x + i_lo * N, i_hi - i_lo, N);
+    if (i_hi > i_lo) evict((const void *)(x + i_lo * N), (i_hi - i_lo) * N * sizeof(float));
+}
+
+/* Nearest-neighbor 2x has a free 64-bit packing trick unrelated to the
+ * generic block-quantization used elsewhere: for output column ow, the
+ * source column is iw = ow/2 -- so ow=2m and ow=2m+1 (an adjacent pair)
+ * ALWAYS map to the exact same source float. One scalar read + one
+ * 64-bit store (both halves set to the same value) replaces two separate
+ * scalar stores. OW = W*2 is always even, so every output row splits into
+ * whole pairs with no tail case. */
+static inline __attribute__((always_inline)) void mh_upsample_nearest_2x(uint32_t hid, const float *in, float *out,
+                                          uint32_t C, uint32_t H, uint32_t W) {
+    if (!yolo_is_compute(hid)) return;
+    const uint32_t cidx = yolo_compute_idx(hid);
+    const uint32_t OH = H * 2u, OW = W * 2u;
+    uint32_t oh_lo, oh_hi;
+    yolo_range(OH, cidx, &oh_lo, &oh_hi);
+    for (uint32_t c = 0; c < C; c++) {
+        for (uint32_t oh = oh_lo; oh < oh_hi; oh++) {
+            const uint32_t ih = oh / 2u;
+            const float *in_row = in + (c * H + ih) * W;
+            uint64_t *out_row64 = (uint64_t *)(out + (c * OH + oh) * OW);
+            for (uint32_t iw = 0; iw < W; iw++) {
+                union { float f[2]; uint64_t u; } pair;
+                pair.f[0] = in_row[iw];
+                pair.f[1] = in_row[iw];
+                out_row64[iw] = pair.u;
+            }
+        }
+    }
+    if (oh_hi > oh_lo) {
+        for (uint32_t c = 0; c < C; c++)
+            evict((const void *)(out + (c * OH + oh_lo) * OW), (oh_hi - oh_lo) * OW * sizeof(float));
+    }
+}
+#define MH_UPSAMPLE2X(IN, OUT, C, H, W) do { mh_upsample_nearest_2x(hid, (IN), (OUT), (C), (H), (W)); MH_BARRIER(); } while (0)
+
+/* mh_concat2_c_chw: N (=total) is always a multiple of 128 at every call
+ * site in this kernel (verified: m.12/15/18/21 all have Ca*H*W a multiple
+ * of 128), which already guarantees hart boundaries land on multiples of
+ * 16 -- more than enough for 8-byte alignment. Split each hart's range at
+ * the a/b source boundary (bytes_a) so each segment is a single-source
+ * wide copy instead of a per-element branch; bytes_a itself is even at
+ * every call site (Ca is always an even channel count here), so the
+ * segment boundaries stay 8-byte aligned too. */
+static inline __attribute__((always_inline)) void mh_concat2_c_chw(uint32_t hid, const float *a, uint32_t Ca,
+                                     const float *b, uint32_t Cb,
+                                     float *out, uint32_t H, uint32_t W) {
+    if (!yolo_is_compute(hid)) return;
+    const uint32_t cidx = yolo_compute_idx(hid);
+    const uint32_t bytes_a = Ca * H * W;
+    const uint32_t total = bytes_a + Cb * H * W;
+    uint32_t lo, hi;
+    yolo_range(total, cidx, &lo, &hi);
+
+    const uint32_t a_seg_lo = lo, a_seg_hi = hi < bytes_a ? hi : bytes_a;
+    if (a_seg_hi > a_seg_lo) {
+        uint64_t *d64 = (uint64_t *)(out + a_seg_lo);
+        const uint64_t *s64 = (const uint64_t *)(a + a_seg_lo);
+        for (uint32_t k = 0; k < (a_seg_hi - a_seg_lo) / 2u; k++) d64[k] = s64[k];
+    }
+    const uint32_t b_seg_lo = lo > bytes_a ? lo : bytes_a, b_seg_hi = hi;
+    if (b_seg_hi > b_seg_lo) {
+        uint64_t *d64 = (uint64_t *)(out + b_seg_lo);
+        const uint64_t *s64 = (const uint64_t *)(b + (b_seg_lo - bytes_a));
+        for (uint32_t k = 0; k < (b_seg_hi - b_seg_lo) / 2u; k++) d64[k] = s64[k];
+    }
+    if (hi > lo) evict((const void *)(out + lo), (hi - lo) * sizeof(float));
+}
+#define MH_CONCAT2_CHW(A, CA, B, CB, OUT, H, W) do { mh_concat2_c_chw(hid, (A), (CA), (B), (CB), (OUT), (H), (W)); MH_BARRIER(); } while (0)
 
 #endif
