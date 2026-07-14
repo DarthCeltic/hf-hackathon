@@ -1,4 +1,7 @@
 /*
+ * Copyright (c) 2026 Marin Radić
+ * SPDX-License-Identifier: Apache-2.0
+ *
  * DnCNN int8 kernel for ET-SoC1 - the `dncnn` leaderboard model (config-driven).
  * TFMA = the int8 tensor fused-multiply-add engine op that runs the hidden convolutions.
  *
