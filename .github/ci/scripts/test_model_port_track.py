@@ -29,8 +29,19 @@ CONTRACT_PATH = ".github/ci/reference/novel.json"
 CLAIM_PATH = "ported_models/submissions/model_ports/novel.json"
 
 
+def git_env() -> dict[str, str]:
+    """Remove hook-provided repository bindings before using fixture repos."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+    }
+
+
 def git(repo: Path, *args: str) -> str:
-    return subprocess.check_output(["git", *args], cwd=repo, text=True).strip()
+    return subprocess.check_output(
+        ["git", *args], cwd=repo, env=git_env(), text=True
+    ).strip()
 
 
 def write_json(repo: Path, path: str, value: object) -> None:
@@ -40,8 +51,14 @@ def write_json(repo: Path, path: str, value: object) -> None:
 
 
 def commit(repo: Path, message: str) -> str:
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", message], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["git", "add", "-A"], cwd=repo, env=git_env(), check=True)
+    subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=repo,
+        env=git_env(),
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
     return git(repo, "rev-parse", "HEAD")
 
 
@@ -72,9 +89,19 @@ class TrackRepo:
     def __init__(self):
         self.temp = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp.name)
-        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
-        subprocess.run(["git", "config", "user.email", "ci@example.com"], cwd=self.repo, check=True)
-        subprocess.run(["git", "config", "user.name", "CI"], cwd=self.repo, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, env=git_env(), check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "ci@example.com"],
+            cwd=self.repo,
+            env=git_env(),
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "CI"],
+            cwd=self.repo,
+            env=git_env(),
+            check=True,
+        )
         write_json(
             self.repo,
             ".github/ci/benchmark_config.json",

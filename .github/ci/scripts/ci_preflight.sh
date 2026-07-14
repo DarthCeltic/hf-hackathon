@@ -9,6 +9,12 @@ set -uo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
 [[ -n "$ROOT" ]] || ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT"
+# Git exports repository-local GIT_* variables to hooks. Drop them after
+# resolving this worktree so temporary repositories created by the tests do
+# not accidentally commit into or move the caller's branch.
+while IFS= read -r variable; do
+  unset "$variable"
+done < <(git rev-parse --local-env-vars)
 fail=0
 note() { printf '  %s\n' "$*"; }
 step() { printf '==> %s\n' "$*"; }
