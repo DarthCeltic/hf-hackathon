@@ -36,6 +36,14 @@ Results are from real ET-SoC1 silicon via the main-branch board workflow. Each m
 Full JSON data lives in [`data/`](data/).
 <!-- leaderboard:end -->
 
+<!-- model-port-standings:start -->
+## Most Models Ported by One Individual
+
+The trusted credit system is in shadow mode while contest dates and the
+historical identity inventory are reviewed. No award credits have been issued.
+
+<!-- model-port-standings:end -->
+
 In this repo, you will find ready-to-deploy ported models, guides to deploy
 them, and opinionated files on how to optimize them for CORE-ET and ET-SoC1
 board runs.
