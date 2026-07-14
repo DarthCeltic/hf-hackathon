@@ -7,6 +7,7 @@
     "source_artifact": "llama_cpp_source"
   },
   "artifacts_file": "../artifacts.json",
+  "reference_contract": ".github/ci/reference/llama32_1b.json",
   "canonical_variant": "Llama-3.2-1B-Instruct-Q8_0",
   "score": {
     "metric": "tokens_per_second",

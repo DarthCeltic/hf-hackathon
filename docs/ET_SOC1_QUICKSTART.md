@@ -261,7 +261,7 @@ STAMP=\$(date +%Y%m%d-%H%M%S)
     --shire 0 \
     --file_load 0x0,../zero2m.bin \
     --file_load 0x02000000,../yolo/weights_region.bin \
-    --file_load 0x04A00000,../yolo/web_car_raw_480x640x3_uint8_rgb.bin \
+    --file_load 0x04A00000,../yolo/coco_room_000139_raw_480x640x3_uint8_rgb.bin \
     --dump_after dump_yolo_m30_\$STAMP.bin \
     --timeout 240 \
   2>&1 | tee run_yolo_m30_\$STAMP.log
@@ -300,7 +300,7 @@ while read -r variant; do
       --shire 0 \
       --file_load 0x0,../zero2m.bin \
       --file_load 0x02000000,../yolo/weights_region.bin \
-      --file_load 0x04A00000,../yolo/web_car_raw_480x640x3_uint8_rgb.bin \
+      --file_load 0x04A00000,../yolo/coco_room_000139_raw_480x640x3_uint8_rgb.bin \
       --dump_after dump_\"\$variant\"_\"\$STAMP\".bin \
       --timeout 240 \
     > run_\"\$variant\"_\"\$STAMP\".log 2>&1

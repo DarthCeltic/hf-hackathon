@@ -17,6 +17,9 @@ export SYSEMU_TIMEOUT SYSEMU_LAUNCHER_TIMEOUT BENCHMARK_DEVICE
 
 model="${1:?model required}"
 leaderboard_team="${LEADERBOARD_TEAM:-${GITHUB_ACTOR:-local}}"
+benchmark_sha="${BENCHMARK_SHA:-${GITHUB_SHA:-local}}"
+benchmark_ref="${BENCHMARK_REF:-${GITHUB_REF:-local}}"
+benchmark_run_url="${BENCHMARK_RUN_URL:-${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-local}/actions/runs/${GITHUB_RUN_ID:-0}}"
 
 python3 - "$model" "$BENCHMARK_CONFIG" "$REPO_ROOT" <<'PY'
 import sys
@@ -34,14 +37,13 @@ PY
 
 write_score() {
   local status="$1" note="$2"
-  local run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-local}/actions/runs/${GITHUB_RUN_ID:-0}"
   python3 "${REPO_ROOT}/.github/ci/scripts/score_results.py" \
     --model "$model" \
     --output "${BENCHMARK_OUTPUT}/score-${model}.json" \
-    --sha "${GITHUB_SHA:-local}" \
-    --ref "${GITHUB_REF:-local}" \
+    --sha "$benchmark_sha" \
+    --ref "$benchmark_ref" \
     --actor "$leaderboard_team" \
-    --run-url "$run_url" \
+    --run-url "$benchmark_run_url" \
     --status "$status" \
     --note "$note"
 }
@@ -57,6 +59,20 @@ print(model_runner(load_config(cfg_path), model))
 PY
 )"
 
+if [[ "$runner" == "smolvlm2_video" ]]; then
+  if [[ "$BENCHMARK_DEVICE" != "soc1sim" ]]; then
+    write_score skipped "${model} multimodal benchmark requires the ET-SoC1 board runner."
+    exit 0
+  fi
+
+  python3 "${REPO_ROOT}/.github/ci/scripts/run_smolvlm2_video_benchmark.py" \
+    --model "$model" \
+    --config "$BENCHMARK_CONFIG" \
+    --results-dir "${BENCHMARK_OUTPUT}/smolvlm2-${model}" \
+    --output "${BENCHMARK_OUTPUT}/score-${model}.json"
+  exit 0
+fi
+
 if [[ "$runner" == "llama_server" ]]; then
   if [[ "$BENCHMARK_DEVICE" != "soc1sim" ]]; then
     write_score skipped "${model} framework benchmark requires the ET-SoC1 board runner."
@@ -65,16 +81,48 @@ if [[ "$runner" == "llama_server" ]]; then
 
   run_dir="${BENCHMARK_OUTPUT}/llama-${model}"
   score_out="${BENCHMARK_OUTPUT}/score-${model}.json"
-  python3 "${REPO_ROOT}/.github/ci/scripts/run_llama_server_benchmark.py" \
-    --model "$model" \
-    --results-dir "$run_dir" \
-    --output "$score_out"
+  reference_contract="$(python3 - "$model" "$BENCHMARK_CONFIG" "$REPO_ROOT" <<'PY'
+import sys
+
+model, cfg_path, repo = sys.argv[1:4]
+sys.path.insert(0, f"{repo}/.github/ci/scripts")
+from benchmark_config_helpers import load_config
+
+print(load_config(cfg_path)["models"][model].get("reference_contract", ""))
+PY
+)"
+  if [[ "$model" == "llama32_1b" && -n "$reference_contract" ]]; then
+    trusted_args=()
+    if [[ -n "${TRUSTED_LLAMA_CPU_PPL_BIN:-}" ]]; then
+      trusted_args+=(--cpu-reference-bin "$TRUSTED_LLAMA_CPU_PPL_BIN")
+    fi
+    python3 "${REPO_ROOT}/.github/ci/scripts/run_trusted_llama_benchmark.py" \
+      --model "$model" \
+      --config "$BENCHMARK_CONFIG" \
+      --contract "${REPO_ROOT}/${reference_contract}" \
+      --results-dir "$run_dir" \
+      --output "$score_out" \
+      "${trusted_args[@]}"
+  else
+    python3 "${REPO_ROOT}/.github/ci/scripts/run_llama_server_benchmark.py" \
+      --model "$model" \
+      --results-dir "$run_dir" \
+      --output "$score_out"
+  fi
   exit 0
 fi
 
 if [[ "$runner" != "elf" ]]; then
   write_score fail "unknown benchmark runner '${runner}' for ${model}"
   exit 0
+fi
+
+if [[ "$model" == "yolo" ]]; then
+  export YOLO_HOST_REFERENCE_JSON="${BENCHMARK_OUTPUT}/yolo-host-reference.json"
+  if ! "$(dirname "$0")/run_yolo_host_reference.sh" "$YOLO_HOST_REFERENCE_JSON"; then
+    write_score fail "pinned YOLO host reference failed; board timing is not eligible"
+    exit 0
+  fi
 fi
 
 "$(dirname "$0")/prepare_benchmark_inputs.sh" "$model"
@@ -154,14 +202,13 @@ run_dir="${BENCHMARK_OUTPUT}/sysemu-${model}"
 mkdir -p "$run_dir"
 
 score_out="${BENCHMARK_OUTPUT}/score-${model}.json"
-run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-local}/actions/runs/${GITHUB_RUN_ID:-0}"
 score_common=(
   --model "$model"
   --output "$score_out"
-  --sha "${GITHUB_SHA:-local}"
-  --ref "${GITHUB_REF:-local}"
+  --sha "$benchmark_sha"
+  --ref "$benchmark_ref"
   --actor "$leaderboard_team"
-  --run-url "$run_url"
+  --run-url "$benchmark_run_url"
 )
 
 cd "${REPO_ROOT}"

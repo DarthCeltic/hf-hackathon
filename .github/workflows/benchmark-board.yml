@@ -10,6 +10,17 @@ name: ET-SoC1 board benchmark
 
 on:
   pull_request:
+  workflow_call:
+    inputs:
+      trusted_yolo:
+        description: "Use main-owned YOLO harness and overlay only participant implementation files."
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      BENCHMARK_ASSETS_URL:
+        description: "Optional private benchmark asset archive for non-trusted callers."
+        required: false
   workflow_dispatch:
     inputs:
       ref:
@@ -25,10 +36,14 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
-  group: et-soc1-board-${{ github.workflow }}
-  cancel-in-progress: false
+  # The single-board runner label serializes different PRs. Per-PR concurrency
+  # only cancels obsolete attempts from the same submission, preserving the
+  # rest of the hardware queue.
+  group: et-soc1-board-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
 
 jobs:
   authorize-board-run:
@@ -39,6 +54,11 @@ jobs:
       permission: ${{ steps.auth.outputs.permission }}
       reason: ${{ steps.auth.outputs.reason }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.sha }}
+          fetch-depth: 0
+
       - name: Check actor repository permission
         id: auth
         env:
@@ -59,7 +79,10 @@ jobs:
               reason="@${ACTOR} has ${permission} permission."
               ;;
             *)
-              if [[ "$external_pr" == "1" ]]; then
+              if [[ "$EVENT_NAME" == "pull_request_target" ]]; then
+                allowed=1
+                reason="The main-owned trusted workflow applies only allowlisted YOLO implementation paths and exposes no repository secrets."
+              elif [[ "$external_pr" == "1" ]]; then
                 allowed=1
                 reason="External fork PR workflow was released by GitHub's required external-contributor approval gate."
               else
@@ -81,6 +104,74 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Protect benchmark oracle and runner
+        if: (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && steps.auth.outputs.permission != 'admin' && steps.auth.outputs.permission != 'maintain'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null || {
+            git fetch --no-tags origin \
+              "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/${PR_NUMBER}/head"
+            fetched_head="$(git rev-parse "refs/remotes/pull/${PR_NUMBER}/head^{commit}")"
+            [[ "$fetched_head" == "$HEAD_SHA" ]]
+          }
+          blocked=()
+          while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/*|\
+              .github/ci/reference/llama32_1b.json|\
+              .github/ci/reference/rwkv7_15b.json|\
+              .github/ci/reference/smolvlm2_500m_video.json|\
+              .github/ci/reference/yolo.json|\
+              .github/ci/platform/deploy/*|\
+              .github/ci/scripts/benchmark_config_helpers.py|\
+              .github/ci/scripts/build_leaderboard_elf.sh|\
+              .github/ci/scripts/changed_benchmark_models.py|\
+              .github/ci/scripts/leaderboard_gate.py|\
+              .github/ci/scripts/merge_leaderboard.py|\
+              .github/ci/scripts/prepare_benchmark_inputs.sh|\
+              .github/ci/scripts/prepare_trusted_llama32_candidate.py|\
+              .github/ci/scripts/prepare_trusted_smolvlm2_candidate.py|\
+              .github/ci/scripts/prepare_trusted_yolo_tree.py|\
+              .github/ci/scripts/refresh_trusted_llama32_prs.sh|\
+              .github/ci/scripts/refresh_trusted_smolvlm2_prs.sh|\
+              .github/ci/scripts/refresh_trusted_yolo_prs.sh|\
+              .github/ci/scripts/run_llama_server_benchmark.py|\
+              .github/ci/scripts/run_smolvlm2_video_benchmark.py|\
+              .github/ci/scripts/run_model_benchmark.sh|\
+              .github/ci/scripts/run_trusted_llama_benchmark.py|\
+              .github/ci/scripts/run_trusted_llama32_candidate.sh|\
+              .github/ci/scripts/run_trusted_smolvlm2_candidate.sh|\
+              .github/ci/scripts/run_yolo_host_reference.sh|\
+              .github/ci/scripts/score_results.py|\
+              .github/ci/scripts/trusted_llama32_gate.py|\
+              .github/ci/scripts/trusted_llama32_input_hash.sh|\
+              .github/ci/scripts/trusted_smolvlm2_gate.py|\
+              .github/ci/scripts/trusted_smolvlm2_input_hash.sh|\
+              .github/ci/scripts/trusted_yolo_input_hash.sh|\
+              scripts/run_sysemu_model_ports.sh|\
+              ported_models/llama_cpp_et/benchmarks/smolvlm2_500m_video.json|\
+              ported_models/yolo/tools/host_reference.py|\
+              ported_models/yolo/assets/yolo/coco_*_raw_480x640x3_uint8_rgb.bin)
+                blocked+=("$path")
+                ;;
+            esac
+          done < <(git diff --name-only --diff-filter=ACDMRTUXB "$BASE_SHA...$HEAD_SHA")
+          if [[ "${#blocked[@]}" -eq 0 ]]; then
+            exit 0
+          fi
+          {
+            echo "### Protected benchmark files"
+            echo
+            echo "Participant PRs may optimize model implementation files, but may not edit the benchmark oracle or runner:"
+            printf -- '- `%s`\n' "${blocked[@]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf 'error: protected benchmark file changed: %s\n' "${blocked[@]}" >&2
+          exit 1
+
   select-board-models:
     name: Select board models
     runs-on: ubuntu-latest
@@ -91,11 +182,13 @@ jobs:
       has_unregistered: ${{ steps.models.outputs.has_unregistered }}
       uncovered: ${{ steps.models.outputs.uncovered }}
       has_uncovered: ${{ steps.models.outputs.has_uncovered }}
+      trusted_yolo: ${{ steps.models.outputs.trusted_yolo }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || github.sha }}
+          ref: ${{ inputs.trusted_yolo && 'main' || github.event.inputs.ref || github.sha }}
           fetch-depth: 0
+          persist-credentials: ${{ !inputs.trusted_yolo }}
 
       - name: Resolve benchmark models
         id: models
@@ -106,12 +199,40 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
           PUSH_BEFORE_SHA: ${{ github.event.before || '' }}
           PUSH_HEAD_SHA: ${{ github.sha }}
+          TRUSTED_YOLO_MODE: ${{ inputs.trusted_yolo && '1' || '0' }}
         run: |
           set -euo pipefail
           unregistered=""
           uncovered=""
+          trusted_yolo=0
           zero_sha="0000000000000000000000000000000000000000"
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+          if [[ "$TRUSTED_YOLO_MODE" == "1" ]]; then
+            git fetch --no-tags origin \
+              "+refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/pull/${{ github.event.pull_request.number }}/head"
+            fetched_head="$(git rev-parse "refs/remotes/pull/${{ github.event.pull_request.number }}/head^{commit}")"
+            if [[ "$fetched_head" != "$PR_HEAD_SHA" ]]; then
+              echo "error: fetched PR head $fetched_head does not match event head $PR_HEAD_SHA" >&2
+              exit 1
+            fi
+            git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null \
+              || git fetch --no-tags origin "$PR_BASE_SHA"
+            trusted_yolo="$(python3 - "$PR_BASE_SHA" "$PR_HEAD_SHA" <<'PY'
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path(".github/ci/scripts").resolve()))
+          from prepare_trusted_yolo_tree import changed_paths, is_allowed_path
+
+          paths = changed_paths(Path.cwd(), sys.argv[1], sys.argv[2])
+          print(1 if any(is_allowed_path(path) for path in paths) else 0)
+          PY
+          )"
+            if [[ "$trusted_yolo" == "1" ]]; then
+              models="yolo"
+            else
+              models=""
+            fi
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             models="$(python3 .github/ci/scripts/changed_benchmark_models.py \
               --target board \
               --base "$PR_BASE_SHA" \
@@ -139,9 +260,29 @@ jobs:
               --models "$INPUT_MODELS" \
               --format space)"
           fi
+          if [[ "$TRUSTED_YOLO_MODE" != "1" && "$EVENT_NAME" == "pull_request" ]] \
+            && git cat-file -e "$PR_BASE_SHA:.github/workflows/trusted-yolo-pr.yml" 2>/dev/null \
+            && [[ " $models " == *" yolo "* ]]; then
+            trusted_yolo=1
+            models="$(python3 - "$models" <<'PY'
+          import sys
+          print(" ".join(model for model in sys.argv[1].split() if model != "yolo"))
+          PY
+          )"
+          fi
+          if [[ "$EVENT_NAME" == "pull_request" ]] \
+            && git cat-file -e "$PR_BASE_SHA:.github/workflows/trusted-smolvlm2-pr.yml" 2>/dev/null \
+            && [[ " $models " == *" smolvlm2_500m_video "* ]]; then
+            models="$(python3 - "$models" <<'PY'
+          import sys
+          print(" ".join(model for model in sys.argv[1].split() if model != "smolvlm2_500m_video"))
+          PY
+          )"
+          fi
           echo "models=$models" >> "$GITHUB_OUTPUT"
           echo "unregistered=$unregistered" >> "$GITHUB_OUTPUT"
           echo "uncovered=$uncovered" >> "$GITHUB_OUTPUT"
+          echo "trusted_yolo=$trusted_yolo" >> "$GITHUB_OUTPUT"
           if [[ -n "$models" ]]; then
             echo "has_models=1" >> "$GITHUB_OUTPUT"
           else
@@ -173,6 +314,10 @@ jobs:
               echo
               echo "Changed runtime source not covered by an adequate benchmark row: \`$uncovered\`"
             fi
+            if [[ "$trusted_yolo" == "1" ]]; then
+              echo
+              echo "YOLO is delegated to the main-controlled \`Trusted YOLO leaderboard gate\`."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   board-benchmark:
@@ -181,6 +326,11 @@ jobs:
     if: needs.authorize-board-run.outputs.allowed == '1' && needs.select-board-models.outputs.has_models == '1'
     runs-on: [self-hosted, Linux, X64, et-soc1, board-ci, single-board]
     timeout-minutes: 240
+    outputs:
+      trusted_main_sha: ${{ steps.trusted-candidate.outputs.main_sha }}
+      trusted_input_sha: ${{ steps.trusted-candidate.outputs.input_sha }}
+      benchmark_sha: ${{ steps.bench.outputs.sha }}
+      benchmark_ref: ${{ steps.bench.outputs.ref }}
     env:
       HOME: /root
       MODELS: ${{ needs.select-board-models.outputs.models }}
@@ -193,39 +343,124 @@ jobs:
       ET_INSTALL: ${{ vars.AIFOUNDRY1_SOC3_BUILD_ET || '/opt/et' }}
       SOC3_REMOTE_ET_INSTALL: ${{ vars.AIFOUNDRY1_SOC3_REMOTE_ET_INSTALL || '/opt/et' }}
       SOC3_REMOTE_ET_PLATFORM: ${{ vars.AIFOUNDRY1_SOC3_REMOTE_ET_PLATFORM || '/opt/et' }}
-      SOC3_FAIL_ON_MODEL_FAILURE: ${{ vars.AIFOUNDRY1_SOC3_FAIL_ON_MODEL_FAILURE || '0' }}
+      SOC3_FAIL_ON_MODEL_FAILURE: ${{ inputs.trusted_yolo && '1' || vars.AIFOUNDRY1_SOC3_FAIL_ON_MODEL_FAILURE || '0' }}
       ET_PLATFORM_SRC: ${{ vars.AIFOUNDRY1_ET_PLATFORM_SRC || '' }}
       LAUNCHER: ${{ vars.AIFOUNDRY1_SOC3_LAUNCHER || '' }}
       ET_LIB_PATH: ${{ vars.AIFOUNDRY1_SOC3_ET_LIB_PATH || '/opt/et/host:/opt/et/lib' }}
       ET_PLATFORM_REF: ${{ vars.ET_PLATFORM_REF || 'master' }}
-      GITHUB_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ !inputs.trusted_yolo && github.token || '' }}
       BENCHMARK_ASSETS_DIR: ${{ vars.AIFOUNDRY1_BENCHMARK_ASSETS_DIR || vars.BENCHMARK_ASSETS_DIR || '' }}
-      BENCHMARK_ASSETS_URL: ${{ secrets.BENCHMARK_ASSETS_URL }}
+      BENCHMARK_ASSETS_URL: ${{ !inputs.trusted_yolo && secrets.BENCHMARK_ASSETS_URL || '' }}
       LFM25_MODEL_PATH: ${{ vars.AIFOUNDRY1_LFM25_MODEL_PATH || '' }}
       WIKITEXT_RAW_PATH: ${{ vars.AIFOUNDRY1_WIKITEXT_RAW_PATH || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || github.sha }}
+          ref: ${{ inputs.trusted_yolo && 'main' || github.event.inputs.ref || github.sha }}
           fetch-depth: 0
           submodules: recursive
+          persist-credentials: ${{ !inputs.trusted_yolo }}
+
+      - name: Build candidate from trusted main and participant implementation
+        id: trusted-candidate
+        if: inputs.trusted_yolo
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_ACTOR: ${{ github.event.pull_request.user.login || github.actor }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/${PR_NUMBER}/head"
+          fetched_head="$(git rev-parse "refs/remotes/pull/${PR_NUMBER}/head^{commit}")"
+          if [[ "$fetched_head" != "$PR_HEAD_SHA" ]]; then
+            echo "error: fetched PR head $fetched_head does not match event head $PR_HEAD_SHA" >&2
+            exit 1
+          fi
+          git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null \
+            || git fetch --no-tags origin "$PR_BASE_SHA"
+
+          trusted_main_sha="$(git rev-parse HEAD)"
+          metadata="${GITHUB_WORKSPACE}/trusted-yolo-candidate.json"
+          python3 .github/ci/scripts/prepare_trusted_yolo_tree.py \
+            --base "$PR_BASE_SHA" \
+            --head "$PR_HEAD_SHA" \
+            --main "$trusted_main_sha" \
+            --metadata "$metadata"
+
+          git config user.name "AIFoundry trusted gate"
+          git config user.email "actions@users.noreply.github.com"
+          git commit --no-gpg-sign -m "Trusted YOLO candidate for PR ${PR_NUMBER}"
+          candidate_sha="$(git rev-parse HEAD)"
+          contract_sha="$(sha256sum .github/ci/reference/yolo.json | awk '{print $1}')"
+          trusted_input_sha="$(.github/ci/scripts/trusted_yolo_input_hash.sh "$trusted_main_sha")"
+
+          {
+            echo "main_sha=$trusted_main_sha"
+            echo "input_sha=$trusted_input_sha"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "TRUSTED_MAIN_SHA=$trusted_main_sha"
+            echo "TRUSTED_CANDIDATE_SHA=$candidate_sha"
+            echo "PARTICIPANT_SHA=$PR_HEAD_SHA"
+            echo "LEADERBOARD_TEAM=$PR_ACTOR"
+            echo "TRUSTED_YOLO_INPUT_SHA=$trusted_input_sha"
+          } >> "$GITHUB_ENV"
+          {
+            echo "### Trusted YOLO candidate"
+            echo
+            echo "- Main harness: \`$trusted_main_sha\`"
+            echo "- Participant commit: \`$PR_HEAD_SHA\`"
+            echo "- Synthetic candidate: \`$candidate_sha\`"
+            echo "- Validation contract: \`$contract_sha\`"
+            echo "- Trusted input set: \`$trusted_input_sha\`"
+            echo
+            echo "Only approved YOLO implementation and packed-weight paths were applied:"
+            python3 - "$metadata" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1]))
+          for path in payload["applied_paths"]:
+              print(f"- `{path}`")
+          ignored = payload.get("ignored_paths", [])
+          if ignored:
+              print("\nAll other participant paths were ignored by the trusted harness.")
+          PY
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Resolve benchmark ref
         id: bench
         env:
           INPUT_REF: ${{ github.event.inputs.ref || '' }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          TRUSTED_YOLO_MODE: ${{ inputs.trusted_yolo && '1' || '0' }}
         run: |
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "ref=${INPUT_REF:-$GITHUB_REF}" >> "$GITHUB_OUTPUT"
-          if [[ "$INPUT_REF" =~ ^refs/pull/([0-9]+)/merge$ ]]; then
-            echo "pr=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          if [[ "$TRUSTED_YOLO_MODE" == "1" ]]; then
+            echo "sha=$PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
+            echo "ref=refs/pull/${PR_NUMBER}/head" >> "$GITHUB_OUTPUT"
+            echo "pr=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "ref=${INPUT_REF:-$GITHUB_REF}" >> "$GITHUB_OUTPUT"
+            if [[ "$INPUT_REF" =~ ^refs/pull/([0-9]+)/merge$ ]]; then
+              echo "pr=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Resolve leaderboard team
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_ACTOR: ${{ github.event.pull_request.user.login || github.actor }}
+          TRUSTED_YOLO_MODE: ${{ inputs.trusted_yolo && '1' || '0' }}
         run: |
-          team="$(.github/ci/scripts/resolve_leaderboard_team.sh "${{ steps.bench.outputs.sha }}")"
+          if [[ "$TRUSTED_YOLO_MODE" == "1" ]]; then
+            team="$PR_ACTOR"
+          else
+            team="$(.github/ci/scripts/resolve_leaderboard_team.sh "${{ steps.bench.outputs.sha }}")"
+          fi
           echo "LEADERBOARD_TEAM=$team" >> "$GITHUB_ENV"
           echo "Leaderboard team: \`$team\`" >> "$GITHUB_STEP_SUMMARY"
 
@@ -334,6 +569,10 @@ jobs:
         # red-X the PR. Pushes to main stay strict (the leaderboard update depends
         # on a clean board run).
         continue-on-error: ${{ github.event_name == 'pull_request' }}
+        env:
+          BENCHMARK_SHA: ${{ steps.bench.outputs.sha }}
+          BENCHMARK_REF: ${{ steps.bench.outputs.ref }}
+          BENCHMARK_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           .github/ci/platform/deploy/soc3-benchmark.sh
 
@@ -341,6 +580,7 @@ jobs:
         if: always() && steps.board-access.outputs.run_board == '1'
         run: |
           source .github/ci/platform/deploy/soc3-ssh.sh
+          rm -rf board-output board-scores
           mkdir -p board-output board-scores
           if soc3_is_local; then
             cp -a /root/et-jobs-deploy/benchmark-output/. board-output/ 2>/dev/null || true
@@ -388,7 +628,10 @@ jobs:
   pr-comment:
     name: PR board comment
     needs: [authorize-board-run, select-board-models, board-benchmark]
-    if: always() && github.event_name == 'pull_request'
+    if: >-
+      always() &&
+      ((github.event_name == 'pull_request' && !inputs.trusted_yolo) ||
+       (inputs.trusted_yolo && needs.select-board-models.outputs.trusted_yolo == '1'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -396,7 +639,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.trusted_yolo && 'main' || github.sha }}
           fetch-depth: 0
 
       - uses: actions/download-artifact@v4
@@ -411,6 +654,7 @@ jobs:
           HAS_MODELS: ${{ needs.select-board-models.outputs.has_models }}
           HAS_UNREGISTERED: ${{ needs.select-board-models.outputs.has_unregistered }}
           HAS_UNCOVERED: ${{ needs.select-board-models.outputs.has_uncovered }}
+          TRUSTED_YOLO: ${{ needs.select-board-models.outputs.trusted_yolo }}
           SELECTED_MODELS: ${{ needs.select-board-models.outputs.models }}
           UNREGISTERED: ${{ needs.select-board-models.outputs.unregistered }}
           UNCOVERED: ${{ needs.select-board-models.outputs.uncovered }}
@@ -419,28 +663,70 @@ jobs:
           BOARD_AUTH_PERMISSION: ${{ needs.authorize-board-run.outputs.permission }}
           BOARD_AUTH_REASON: ${{ needs.authorize-board-run.outputs.reason }}
           BOARD_ACTOR: ${{ github.actor }}
-          GITHUB_SHA: ${{ github.sha }}
-          GITHUB_REF: ${{ github.ref }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DISPLAY_SHA: ${{ inputs.trusted_yolo && needs.board-benchmark.outputs.benchmark_sha || github.sha }}
+          DISPLAY_REF: ${{ inputs.trusted_yolo && needs.board-benchmark.outputs.benchmark_ref || github.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_SHA: ${{ inputs.trusted_yolo && needs.board-benchmark.outputs.trusted_main_sha || github.event.pull_request.base.sha }}
+          TRUSTED_YOLO_MODE: ${{ inputs.trusted_yolo && '1' || '0' }}
+          BENCHMARK_SHA: ${{ needs.board-benchmark.outputs.benchmark_sha }}
+          BENCHMARK_REF: ${{ needs.board-benchmark.outputs.benchmark_ref }}
+          BENCHMARK_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEADERBOARD_MIN_RELATIVE_IMPROVEMENT: ${{ vars.LEADERBOARD_MIN_RELATIVE_IMPROVEMENT || '0' }}
         run: |
           set -euo pipefail
+          mkdir -p board-scores
+          DISPLAY_SHA="${DISPLAY_SHA:-$PR_HEAD_SHA}"
+          DISPLAY_REF="${DISPLAY_REF:-refs/pull/${PR_NUMBER}/head}"
+          PR_BASE_SHA="${PR_BASE_SHA:-$(git rev-parse HEAD)}"
+
+          if [[ "$TRUSTED_YOLO_MODE" == "1" ]]; then
+            extra_args=(--require-baseline --force-submission-models yolo)
+            if [[ -n "$BENCHMARK_SHA" && -n "$BENCHMARK_REF" ]]; then
+              extra_args+=(
+                --expected-sha "$BENCHMARK_SHA"
+                --expected-ref "$BENCHMARK_REF"
+                --expected-run-url "$BENCHMARK_RUN_URL"
+              )
+            fi
+            python3 .github/ci/scripts/leaderboard_gate.py \
+              --scores-dir board-scores \
+              --models "$SELECTED_MODELS" \
+              --target board \
+              --base-ref "$PR_BASE_SHA" \
+              "${extra_args[@]}" \
+              --output /tmp/trusted-yolo-gate.md || true
+            cat > /tmp/board-comment.md <<EOF
+          ## Trusted YOLO board result
+
+          Workflow: [${BENCHMARK_RUN_URL}](${BENCHMARK_RUN_URL})
+
+          Commit: \`${DISPLAY_SHA:0:12}\` - ref \`${DISPLAY_REF}\`
+
+          EOF
+            cat /tmp/trusted-yolo-gate.md >> /tmp/board-comment.md
+            exit 0
+          fi
+
           if [[ "$HAS_MODELS" != "1" && "$HAS_UNREGISTERED" != "1" && "$HAS_UNCOVERED" != "1" ]]; then
             cat > /tmp/board-comment.md <<EOF
           ## ET-SoC1 board benchmark
 
           Workflow: [${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
-          Commit: \`${GITHUB_SHA:0:12}\` - ref \`${GITHUB_REF}\`
+          Commit: \`${DISPLAY_SHA:0:12}\` - ref \`${DISPLAY_REF}\`
 
           No changed board benchmark models were selected for this PR.
 
           _Real ET-SoC1 PR runs are scoped to configured board models touched by the PR._
           EOF
+            if [[ "$TRUSTED_YOLO" == "1" ]]; then
+              printf '\n_YOLO is evaluated separately by the main-controlled `Trusted YOLO leaderboard gate`._\n' \
+                >> /tmp/board-comment.md
+            fi
             exit 0
           fi
 
-          mkdir -p board-scores
           python3 .github/ci/scripts/format_pr_comment.py \
             --scores-dir board-scores \
             --output /tmp/board-comment.md \
@@ -449,8 +735,8 @@ jobs:
             --unregistered "$UNREGISTERED" \
             --uncovered "$UNCOVERED" \
             --title "ET-SoC1 board benchmark" \
-            --sha "$GITHUB_SHA" \
-            --ref "$GITHUB_REF" \
+            --sha "$DISPLAY_SHA" \
+            --ref "$DISPLAY_REF" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --footer "Real board PR runs select the changed configured board models only. Main branch pushes update the leaderboard."
           if [[ "$BOARD_AUTH_ALLOWED" != "1" ]]; then
@@ -458,6 +744,10 @@ jobs:
           fi
           if [[ "$HAS_MODELS" == "1" && "$BOARD_RESULT" != "success" ]]; then
             printf '\n_Board job result: `%s`._\n' "$BOARD_RESULT" >> /tmp/board-comment.md
+          fi
+          if [[ "$TRUSTED_YOLO" == "1" ]]; then
+            printf '\n_YOLO is evaluated separately by the main-controlled `Trusted YOLO leaderboard gate`._\n' \
+              >> /tmp/board-comment.md
           fi
           python3 .github/ci/scripts/leaderboard_gate.py \
             --scores-dir board-scores \
@@ -473,24 +763,25 @@ jobs:
           } >> /tmp/board-comment.md
 
       - uses: peter-evans/create-or-update-comment@v4
-        continue-on-error: true
+        continue-on-error: ${{ !inputs.trusted_yolo }}
         with:
           issue-number: ${{ github.event.pull_request.number }}
           body-path: /tmp/board-comment.md
-          comment-tag: et-soc1-board-benchmark
+          comment-tag: ${{ inputs.trusted_yolo && 'trusted-yolo-board-benchmark' || 'et-soc1-board-benchmark' }}
 
   leaderboard-gate:
-    name: Leaderboard gate
+    name: ${{ inputs.trusted_yolo && 'Trusted YOLO leaderboard gate' || 'Leaderboard gate' }}
     needs: [authorize-board-run, select-board-models, board-benchmark]
-    if: always() && github.event_name == 'pull_request'
+    if: always() && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.trusted_yolo && 'main' || github.sha }}
           fetch-depth: 0
+          persist-credentials: ${{ !inputs.trusted_yolo }}
 
       - uses: actions/download-artifact@v4
         if: needs.select-board-models.outputs.has_models == '1'
@@ -499,14 +790,67 @@ jobs:
           name: board-benchmark-scores
           path: board-scores
 
+      - name: Confirm trusted main inputs stayed current
+        if: inputs.trusted_yolo && needs.select-board-models.outputs.has_models == '1'
+        env:
+          EXPECTED_INPUT_SHA: ${{ needs.board-benchmark.outputs.trusted_input_sha }}
+          TRUSTED_MAIN_SHA: ${{ needs.board-benchmark.outputs.trusted_main_sha }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$EXPECTED_INPUT_SHA" || -z "$TRUSTED_MAIN_SHA" ]]; then
+            echo "Trusted YOLO board job did not report its main input set." >&2
+            exit 1
+          fi
+          current_main="$(git rev-parse HEAD)"
+          current_input_sha="$(.github/ci/scripts/trusted_yolo_input_hash.sh "$current_main")"
+          if [[ "$current_input_sha" != "$EXPECTED_INPUT_SHA" ]]; then
+            echo "Trusted YOLO inputs or baseline changed while this run was active." >&2
+            echo "Started from $TRUSTED_MAIN_SHA ($EXPECTED_INPUT_SHA)." >&2
+            echo "Current main is $current_main ($current_input_sha)." >&2
+            echo "Re-run all jobs to evaluate the participant patch on current main." >&2
+            exit 1
+          fi
+
       - name: Compare PR scores to leaderboard
         env:
+          AUTH_RESULT: ${{ needs.authorize-board-run.result }}
+          SELECT_RESULT: ${{ needs.select-board-models.result }}
+          BOARD_RESULT: ${{ needs.board-benchmark.result }}
+          HAS_MODELS: ${{ needs.select-board-models.outputs.has_models }}
           SELECTED_MODELS: ${{ needs.select-board-models.outputs.models }}
           UNREGISTERED: ${{ needs.select-board-models.outputs.unregistered }}
           UNCOVERED: ${{ needs.select-board-models.outputs.uncovered }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_SHA: ${{ inputs.trusted_yolo && needs.board-benchmark.outputs.trusted_main_sha || github.event.pull_request.base.sha }}
+          TRUSTED_YOLO_MODE: ${{ inputs.trusted_yolo && '1' || '0' }}
+          BENCHMARK_SHA: ${{ needs.board-benchmark.outputs.benchmark_sha }}
+          BENCHMARK_REF: ${{ needs.board-benchmark.outputs.benchmark_ref }}
+          BENCHMARK_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEADERBOARD_MIN_RELATIVE_IMPROVEMENT: ${{ vars.LEADERBOARD_MIN_RELATIVE_IMPROVEMENT || '0' }}
         run: |
+          set -euo pipefail
+          if [[ "$AUTH_RESULT" != "success" || "$SELECT_RESULT" != "success" ]]; then
+            echo "Board authorization or model selection failed." >&2
+            exit 1
+          fi
+          if [[ "$HAS_MODELS" == "1" && "$BOARD_RESULT" != "success" ]]; then
+            echo "Selected board job result: $BOARD_RESULT" >&2
+            exit 1
+          fi
+          extra_args=()
+          if [[ "$HAS_MODELS" == "1" ]]; then
+            if [[ -z "$BENCHMARK_SHA" || -z "$BENCHMARK_REF" ]]; then
+              echo "Board job did not report score provenance." >&2
+              exit 1
+            fi
+            extra_args+=(
+              --expected-sha "$BENCHMARK_SHA"
+              --expected-ref "$BENCHMARK_REF"
+              --expected-run-url "$BENCHMARK_RUN_URL"
+            )
+          fi
+          if [[ "$TRUSTED_YOLO_MODE" == "1" && "$HAS_MODELS" == "1" ]]; then
+            extra_args+=(--require-baseline --force-submission-models yolo)
+          fi
           python3 .github/ci/scripts/leaderboard_gate.py \
             --scores-dir board-scores \
             --models "$SELECTED_MODELS" \
@@ -514,6 +858,7 @@ jobs:
             --uncovered "$UNCOVERED" \
             --target board \
             --base-ref "$PR_BASE_SHA" \
+            "${extra_args[@]}" \
             --output "$GITHUB_STEP_SUMMARY"
 
   update-leaderboard:
@@ -522,22 +867,86 @@ jobs:
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.select-board-models.outputs.has_models == '1' && needs.board-benchmark.result == 'success'
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
+      pull-requests: read
+      statuses: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
+          token: ${{ secrets.LEADERBOARD_PUSH_TOKEN }}
 
       - uses: actions/download-artifact@v4
         with:
           name: board-benchmark-scores
           path: board-scores
 
+      - name: Resolve merged pull request and canonical participant
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          payload="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls")"
+          pr="$(jq -c 'map(select(.merged_at != null and .base.ref == "main")) | sort_by(.merged_at) | last // empty' <<< "$payload")"
+          if [[ -n "$pr" ]]; then
+            participant_login="$(jq -r .user.login <<< "$pr")"
+            pr_number="$(jq -r .number <<< "$pr")"
+            participant_head_sha="$(jq -r .head.sha <<< "$pr")"
+            merged_at="$(jq -r .merged_at <<< "$pr")"
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100" \
+              --jq '.[].filename' \
+              | grep -E '^ported_models/submissions/model_ports/[a-z0-9][a-z0-9_-]+\.json$' \
+              | sort -u > "$RUNNER_TEMP/model-port-pr-claims.txt" || true
+          else
+            participant_login="$(.github/ci/scripts/resolve_leaderboard_team.sh "$GITHUB_SHA")"
+            pr_number=0
+            participant_head_sha="$GITHUB_SHA"
+            merged_at="$(git show -s --format=%cI "$GITHUB_SHA")"
+            : > "$RUNNER_TEMP/model-port-pr-claims.txt"
+          fi
+          [[ -n "$participant_login" ]]
+          {
+            echo "PARTICIPANT_LOGIN=$participant_login"
+            echo "PARTICIPANT_PR_NUMBER=$pr_number"
+            echo "PARTICIPANT_HEAD_SHA=$participant_head_sha"
+            echo "PARTICIPANT_MERGED_AT=$merged_at"
+          } >> "$GITHUB_ENV"
+
+      - name: Synchronize mutable leaderboard state
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          git switch --detach origin/main
+
       - name: Merge board scores into leaderboard
         env:
           SELECTED_MODELS: ${{ needs.select-board-models.outputs.models }}
-        run: python3 .github/ci/scripts/merge_leaderboard.py --scores-dir board-scores --models "$SELECTED_MODELS"
+        run: |
+          python3 .github/ci/scripts/merge_leaderboard.py \
+            --scores-dir board-scores \
+            --models "$SELECTED_MODELS" \
+            --participant-login "$PARTICIPANT_LOGIN"
+
+      - name: Validate and issue model-port credits
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          EXPECTED_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 .github/ci/scripts/model_port_credit.py \
+            --before "$BEFORE_SHA" \
+            --head "$GITHUB_SHA" \
+            --actor "$PARTICIPANT_LOGIN" \
+            --pr-number "$PARTICIPANT_PR_NUMBER" \
+            --participant-head-sha "$PARTICIPANT_HEAD_SHA" \
+            --merged-at "$PARTICIPANT_MERGED_AT" \
+            --expected-run-url "$EXPECTED_RUN_URL" \
+            --scores-dir board-scores \
+            --expected-claim-paths "$RUNNER_TEMP/model-port-pr-claims.txt" \
+            --report "$RUNNER_TEMP/model-port-credit-report.json" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Commit leaderboard
         run: |
@@ -550,5 +959,177 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/*.json README.md
           git commit -m "chore(leaderboard): update ET-SoC1 board scores [skip ci]"
-          git pull --rebase origin main
-          git push origin HEAD:main
+          git push origin HEAD:main || {
+            echo "Main advanced during credit processing; refusing a stale ledger push. Re-run this workflow." >&2
+            exit 1
+          }
+          GH_TOKEN="${{ github.token }}" \
+            .github/ci/scripts/refresh_model_port_prs.sh "$GITHUB_SHA" HEAD
+
+  invalidate-trusted-yolo-prs:
+    name: Invalidate stale trusted YOLO checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Mark open YOLO PRs pending when trusted inputs changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/ci/scripts/refresh_trusted_yolo_prs.sh "${{ github.event.before }}" HEAD pending-only
+
+  refresh-trusted-yolo-prs:
+    name: Refresh open trusted YOLO checks
+    needs: [select-board-models, board-benchmark, update-leaderboard]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Re-run open YOLO PRs when trusted inputs changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/ci/scripts/refresh_trusted_yolo_prs.sh "${{ github.event.before }}" HEAD
+
+  invalidate-trusted-llama32-prs:
+    name: Invalidate stale trusted Llama checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Mark open Llama PRs pending when trusted inputs changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/ci/scripts/refresh_trusted_llama32_prs.sh "${{ github.event.before }}" HEAD pending-only
+
+  refresh-trusted-llama32-prs:
+    name: Refresh open trusted Llama checks
+    needs: [select-board-models, board-benchmark, update-leaderboard]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Re-run open Llama PRs when trusted inputs changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/ci/scripts/refresh_trusted_llama32_prs.sh "${{ github.event.before }}" HEAD
+
+  invalidate-trusted-smolvlm2-prs:
+    name: Invalidate stale trusted SmolVLM2 checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Mark open SmolVLM2 PRs pending when trusted inputs changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/ci/scripts/refresh_trusted_smolvlm2_prs.sh "${{ github.event.before }}" HEAD pending-only
+
+  refresh-trusted-smolvlm2-prs:
+    name: Refresh open trusted SmolVLM2 checks
+    needs: [select-board-models, board-benchmark, update-leaderboard]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Re-run open SmolVLM2 PRs when trusted inputs changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/ci/scripts/refresh_trusted_smolvlm2_prs.sh "${{ github.event.before }}" HEAD
+
+  invalidate-trusted-model-port-prs:
+    name: Invalidate stale trusted model-port checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Mark open model-port PRs pending when trusted inputs changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/ci/scripts/refresh_model_port_prs.sh "${{ github.event.before }}" HEAD pending-only
+
+  refresh-trusted-model-port-prs:
+    name: Refresh open trusted model-port checks
+    needs: [select-board-models, board-benchmark, update-leaderboard]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Re-run open model-port PRs when trusted inputs changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/ci/scripts/refresh_model_port_prs.sh "${{ github.event.before }}" HEAD

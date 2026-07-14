@@ -11,6 +11,25 @@ set -euo pipefail
 DEST="${SOC3_DEST:-/root/et-jobs-deploy}"
 ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
 BENCHMARK_ARTIFACT_ROOT="${BENCHMARK_ARTIFACT_ROOT:-${ROOT}/local-artifacts/model-port-benchmarks}"
+
+et_platform_src_complete() {
+  local src="$1"
+  [[ -f "$src/gp-sdk/device/sdk/lib/erbium-soc1sim/erbium.ld" \
+    && -f "$src/gp-sdk/device/sdk/lib/erbium-soc1sim/layout.c" \
+    && -f "$src/et-common-libs/include/erbium/isa/atomic.h" \
+    && -f "$src/et-common-libs/include/erbium-soc1sim/isa/syscall.h" ]]
+}
+
+if [[ -z "${LLAMA_CPP_ET_SOURCE_REVISION:-}" ]]; then
+  _llama_source="${ROOT}/ported_models/llama_cpp_et/src/llama.cpp-et"
+  if [[ -d "${_llama_source}" ]]; then
+    LLAMA_CPP_ET_SOURCE_REVISION="$(git -C "${_llama_source}" rev-parse HEAD 2>/dev/null || true)"
+  fi
+  if [[ -z "${LLAMA_CPP_ET_SOURCE_REVISION:-}" ]]; then
+    LLAMA_CPP_ET_SOURCE_REVISION="$(git -C "${ROOT}" ls-tree HEAD ported_models/llama_cpp_et/src/llama.cpp-et 2>/dev/null | awk '{print $3}')"
+  fi
+  export LLAMA_CPP_ET_SOURCE_REVISION
+fi
 MODELS="${MODELS:-}"
 MODELS="$(python3 "${ROOT}/.github/ci/scripts/benchmark_config_helpers.py" --target board --models "$MODELS" --format space)"
 # shellcheck source=soc3-ssh.sh
@@ -18,11 +37,47 @@ source "$(dirname "$0")/soc3-ssh.sh"
 SOC3_HOST="${SOC3_HOST:-root@board-host}"
 export SOC3_HOST
 
+TRANSPORT="$(soc3_resolve_transport)"
+SSH_CMD=()
+if [[ "$TRANSPORT" != "local" ]]; then
+  read -r -a SSH_CMD <<<"$(soc3_ssh_cmd)"
+fi
+
+# A failed local prebuild must not leave an older run's score eligible for
+# collection. Clear the board-host output before any operation that can fail.
+if [[ "$TRANSPORT" == "local" ]]; then
+  rm -rf "${DEST}/benchmark-output"
+  mkdir -p "${DEST}/benchmark-output"
+else
+  output_dir="$(printf "%q" "${DEST}/benchmark-output")"
+  "${SSH_CMD[@]}" "rm -rf ${output_dir} && mkdir -p ${output_dir}"
+fi
+
 if [[ -x "${SOC3_BUILD_ET:-$HOME/et}/bin/riscv64-unknown-elf-gcc" ]]; then
-  echo "==> Pre-building ELFs locally (${SOC3_BUILD_ET:-$HOME/et})"
-  mkdir -p "${BENCHMARK_ARTIFACT_ROOT}"
-  _etp="${ET_PLATFORM_SRC:-${ROOT}/.ci-work/et-platform}"
-  ELF_MODELS="$(python3 - "$ROOT" "$MODELS" <<'PY'
+  _etp="${ET_PLATFORM_SRC:-}"
+  if [[ -n "$_etp" ]] && ! et_platform_src_complete "$_etp"; then
+    echo "WARN: local ET_PLATFORM_SRC=$_etp is incomplete; searching for a usable et-platform tree" >&2
+    _etp=""
+  fi
+  if [[ -z "$_etp" ]]; then
+    for candidate in \
+      "$HOME/et-platform" \
+      "$HOME/.ci-work/et-platform" \
+      /opt/et-platform \
+      /root/et-platform \
+      "${ROOT}/.ci-work/et-platform"; do
+      if et_platform_src_complete "$candidate"; then
+        _etp="$candidate"
+        break
+      fi
+    done
+  fi
+  if [[ -z "$_etp" ]]; then
+    echo "WARN: skipping local ELF prebuild because no complete et-platform source tree was found" >&2
+  else
+    echo "==> Pre-building ELFs locally (${SOC3_BUILD_ET:-$HOME/et}; ET_PLATFORM_SRC=$_etp)"
+    mkdir -p "${BENCHMARK_ARTIFACT_ROOT}"
+    ELF_MODELS="$(python3 - "$ROOT" "$MODELS" <<'PY'
 import sys
 repo, raw_models = sys.argv[1:3]
 sys.path.insert(0, f"{repo}/.github/ci/scripts")
@@ -32,21 +87,17 @@ models = parse_model_selection(raw_models, cfg, target="board")
 print(" ".join(model for model in models if model_runner(cfg, model) == "elf"))
 PY
 )"
-  for _m in ${ELF_MODELS}; do
-    REPO_ROOT="${ROOT}" BOARD_BENCHMARK=1 BENCHMARK_DEVICE=soc1sim \
-      ET_INSTALL="${SOC3_BUILD_ET:-$HOME/et}" ET_PLATFORM_SRC="${_etp}" \
-      BENCHMARK_ARTIFACT_ROOT="${BENCHMARK_ARTIFACT_ROOT}" \
-      bash "${ROOT}/.github/ci/scripts/build_leaderboard_elf.sh" "${_m}"
-  done
-  export SOC3_PREBUILT=1
+    for _m in ${ELF_MODELS}; do
+      REPO_ROOT="${ROOT}" BOARD_BENCHMARK=1 BENCHMARK_DEVICE=soc1sim \
+        ET_INSTALL="${SOC3_BUILD_ET:-$HOME/et}" ET_PLATFORM_SRC="${_etp}" \
+        BENCHMARK_ARTIFACT_ROOT="${BENCHMARK_ARTIFACT_ROOT}" \
+        bash "${ROOT}/.github/ci/scripts/build_leaderboard_elf.sh" "${_m}"
+    done
+    export SOC3_PREBUILT=1
+  fi
 fi
 
-TRANSPORT="$(soc3_resolve_transport)"
 echo "==> soc3 transport: ${TRANSPORT} (set USE_TAILSCALE_SSH=0 to force OpenSSH)"
-SSH_CMD=()
-if [[ "$TRANSPORT" != "local" ]]; then
-  read -r -a SSH_CMD <<<"$(soc3_ssh_cmd)"
-fi
 
 RSYNC_HOST="${SOC3_HOST}"
 if [[ "$TRANSPORT" == "local" ]]; then
@@ -105,11 +156,45 @@ fi
 if [[ -n "${GITHUB_RUN_ID:-}" ]]; then
   REMOTE_ENV+=("GITHUB_RUN_ID=$(printf "%q" "${GITHUB_RUN_ID}")")
 fi
+for name in \
+  BENCHMARK_SHA \
+  BENCHMARK_REF \
+  BENCHMARK_RUN_URL \
+  TRUSTED_BOARD_LAUNCHER_TIMEOUT_CAP \
+  TRUSTED_BOARD_OUTER_TIMEOUT_CAP; do
+  if [[ -n "${!name:-}" ]]; then
+    REMOTE_ENV+=("${name}=$(printf "%q" "${!name}")")
+  fi
+done
 if [[ -n "${SOC3_PREBUILT:-}" ]]; then
   REMOTE_ENV+=("SOC3_PREBUILT=$(printf "%q" "${SOC3_PREBUILT}")")
 fi
 if [[ -n "${SOC3_FAIL_ON_MODEL_FAILURE:-}" ]]; then
   REMOTE_ENV+=("SOC3_FAIL_ON_MODEL_FAILURE=$(printf "%q" "${SOC3_FAIL_ON_MODEL_FAILURE}")")
+fi
+if [[ -n "${SOC3_SKIP_BOARD_SMOKE:-}" ]]; then
+  REMOTE_ENV+=("SOC3_SKIP_BOARD_SMOKE=$(printf "%q" "${SOC3_SKIP_BOARD_SMOKE}")")
+fi
+if [[ -n "${SMOLVLM2_SKIP_PPL:-}" ]]; then
+  REMOTE_ENV+=("SMOLVLM2_SKIP_PPL=$(printf "%q" "${SMOLVLM2_SKIP_PPL}")")
+fi
+if [[ -n "${SMOLVLM2_SKIP_HOST_REFERENCE:-}" ]]; then
+  REMOTE_ENV+=("SMOLVLM2_SKIP_HOST_REFERENCE=$(printf "%q" "${SMOLVLM2_SKIP_HOST_REFERENCE}")")
+fi
+if [[ -n "${LLAMA_CPP_ET_SOURCE_REVISION:-}" ]]; then
+  REMOTE_ENV+=("LLAMA_CPP_ET_SOURCE_REVISION=$(printf "%q" "${LLAMA_CPP_ET_SOURCE_REVISION}")")
+fi
+if [[ -n "${TRUSTED_LLAMA_BUILD_KEY:-}" ]]; then
+  REMOTE_ENV+=("TRUSTED_LLAMA_BUILD_KEY=$(printf "%q" "${TRUSTED_LLAMA_BUILD_KEY}")")
+fi
+if [[ -n "${TRUSTED_LLAMA_REUSE_BUILD:-}" ]]; then
+  REMOTE_ENV+=("TRUSTED_LLAMA_REUSE_BUILD=$(printf "%q" "${TRUSTED_LLAMA_REUSE_BUILD}")")
+fi
+if [[ -n "${TRUSTED_LLAMA_CPU_PPL_BIN:-}" ]]; then
+  REMOTE_ENV+=("TRUSTED_LLAMA_CPU_PPL_BIN=$(printf "%q" "${TRUSTED_LLAMA_CPU_PPL_BIN}")")
+fi
+if [[ -n "${TRUSTED_SMOLVLM2_CPU_BUILD_KEY:-}" ]]; then
+  REMOTE_ENV+=("TRUSTED_SMOLVLM2_CPU_BUILD_KEY=$(printf "%q" "${TRUSTED_SMOLVLM2_CPU_BUILD_KEY}")")
 fi
 if [[ -n "${LAUNCHER:-}" ]]; then
   REMOTE_ENV+=("LAUNCHER=$(printf "%q" "${LAUNCHER}")")
@@ -146,6 +231,10 @@ for name in \
   SMOLLM2_135M_MODEL_PATH \
   SMOLLM2_360M_MODEL_PATH \
   SMOLLM2_17B_MODEL_PATH \
+  SMOLVLM2_500M_VIDEO_MODEL_PATH \
+  SMOLVLM2_500M_VIDEO_MMPROJ_PATH \
+  SMOLVLM2_COCO_CAT_PATH \
+  SMOLVLM2_COCO_GIRAFFES_PATH \
   LFM25_MODEL_PATH \
   LFM25_LD_LIBRARY_PATH \
   WIKITEXT_RAW_PATH; do
@@ -169,7 +258,7 @@ export ET_INSTALL="${ET_INSTALL:-/opt/et}"
 export ET_PLATFORM="${ET_PLATFORM:-/opt/et}"
 export TOOLCHAIN_DISTRO_VERSION="${TOOLCHAIN_DISTRO_VERSION:-22.04}"
 export PATH="${ET_INSTALL}/bin:/opt/et/bin:/opt/riscv/bin:${PATH}"
-export ET_LIB_PATH="${ET_LIB_PATH:-/opt/et/host:/opt/et/lib}"
+export ET_LIB_PATH="${ET_LIB_PATH:-/opt/et/lib:/opt/et/host}"
 export LD_LIBRARY_PATH="${ET_LIB_PATH}:${LD_LIBRARY_PATH:-}"
 export BOARD_LOCK="${BOARD_LOCK:-/var/lock/etsoc-shire0.lock}"
 export SOC3_PREBUILT="${SOC3_PREBUILT:-0}"
@@ -177,12 +266,24 @@ export WORK_ROOT="$DEST/.ci-work"
 export BENCHMARK_OUTPUT="$DEST/benchmark-output"
 export BENCHMARK_ARTIFACT_ROOT="$DEST/local-artifacts/model-port-benchmarks"
 export AMP_ROOT="$BENCHMARK_ARTIFACT_ROOT"
-if [[ -z "${LAUNCHER:-}" ]]; then
-  if [[ -x "${ET_INSTALL}/bin/erbium_soc1sim_argbuf_dynmem" ]]; then
-    export LAUNCHER="${ET_INSTALL}/bin/erbium_soc1sim_argbuf_dynmem"
-  else
-    export LAUNCHER="$WORK_ROOT/build/erbium_soc1sim_argbuf/erbium_soc1sim_argbuf_dynmem"
+_llama_build_key="${TRUSTED_LLAMA_BUILD_KEY:-${LLAMA_CPP_ET_SOURCE_REVISION:-}}"
+if [[ -n "$_llama_build_key" ]]; then
+  if [[ ! "$_llama_build_key" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "error: llama.cpp build key must be a full git commit SHA" >&2
+    exit 2
   fi
+  export LLAMA_CPP_ET_WORKDIR="$DEST/local-artifacts/frameworks/llama.cpp-et/build-$_llama_build_key"
+  export LLAMA_CPP_ET_SERVER="$LLAMA_CPP_ET_WORKDIR/bin/llama-server"
+  export LLAMA_CPP_ET_PERPLEXITY="$LLAMA_CPP_ET_WORKDIR/bin/llama-perplexity"
+fi
+if [[ -n "${TRUSTED_SMOLVLM2_CPU_BUILD_KEY:-}" ]]; then
+  if [[ ! "$TRUSTED_SMOLVLM2_CPU_BUILD_KEY" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "error: trusted SmolVLM2 CPU build key must be a full git commit SHA" >&2
+    exit 2
+  fi
+  _smol_cpu_dir="$DEST/local-artifacts/frameworks/llama.cpp-et/build-$TRUSTED_SMOLVLM2_CPU_BUILD_KEY/bin"
+  export TRUSTED_SMOLVLM2_CPU_SERVER="$_smol_cpu_dir/llama-server"
+  export TRUSTED_SMOLVLM2_CPU_PERPLEXITY="$_smol_cpu_dir/llama-perplexity"
 fi
 export PATH="$ET_INSTALL/bin:$PATH"
 mkdir -p "$WORK_ROOT" "$BENCHMARK_OUTPUT" "$AMP_ROOT" "$(dirname "$BOARD_LOCK")"
@@ -231,6 +332,39 @@ else
   echo "WARN: ET device headers missing at $esp (need esperanto/et-trace/encoder.h). The /opt/et SDK install on this board host is incomplete; the ggml-et framework build will fail until the device headers are installed." >&2
 fi
 
+et_platform_src_complete() {
+  local src="$1"
+  [[ -f "$src/gp-sdk/device/sdk/lib/erbium-soc1sim/erbium.ld" \
+    && -f "$src/gp-sdk/device/sdk/lib/erbium-soc1sim/layout.c" \
+    && -f "$src/et-common-libs/include/erbium/isa/atomic.h" \
+    && -f "$src/et-common-libs/include/erbium-soc1sim/isa/syscall.h" ]]
+}
+
+# Resolve the complete platform source before creating Docker compiler wrappers:
+# the wrapper must bind-mount the same absolute source path used by the build.
+if [[ -n "${ET_PLATFORM_SRC:-}" ]] && ! et_platform_src_complete "$ET_PLATFORM_SRC"; then
+  echo "WARN: ET_PLATFORM_SRC=$ET_PLATFORM_SRC is incomplete; searching for a usable et-platform tree" >&2
+  unset ET_PLATFORM_SRC
+fi
+if [[ -z "${ET_PLATFORM_SRC:-}" ]]; then
+  for candidate in "$HOME/et-platform" "$HOME/.ci-work/et-platform" "$HOME/et" /opt/et-platform /root/et-platform "$DEST/et-platform"; do
+    if et_platform_src_complete "$candidate"; then
+      export ET_PLATFORM_SRC="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "${ET_PLATFORM_SRC:-}" ]]; then
+  echo "Cloning a complete shallow et-platform tree..."
+  rm -rf -- "$DEST/et-platform"
+  git clone --depth 1 https://github.com/aifoundry-org/et-platform.git "$DEST/et-platform"
+  export ET_PLATFORM_SRC="$DEST/et-platform"
+  if ! et_platform_src_complete "$ET_PLATFORM_SRC"; then
+    echo "error: cloned et-platform tree is incomplete" >&2
+    exit 1
+  fi
+fi
+
 # The ET SDK's RISC-V gcc (/opt/et/bin) may need a newer glibc than this host has
 # (fails with "GLIBC_2.38 not found"). The ggml-et framework build resolves its
 # toolchain from $ENV{ET_PLATFORM} -> ${ET_PLATFORM}/bin/riscv64-unknown-elf-*. If
@@ -273,17 +407,52 @@ exec docker run --rm -v "$DEST:$DEST" -v "$ET_INSTALL:$ET_INSTALL:ro" -v "$_plat
 WRAPEOF
       chmod +x "$SHADOW/bin/$name"
     done
+    # Both variables must point at the mirrored SDK. install_toolchain.sh runs
+    # as a child process, so changing ET_INSTALL there would not reach the
+    # subsequent ELF build; leaving ET_INSTALL at /opt/et would bypass these
+    # wrappers and execute the glibc-incompatible compiler directly.
     export ET_PLATFORM="$SHADOW"
+    export ET_INSTALL="$SHADOW"
     # Drop a stale framework CMake cache that pinned the old (broken) toolchain path.
     _fwcache="$DEST/local-artifacts/frameworks/llama.cpp-et/build-et/CMakeCache.txt"
     if [[ -f "$_fwcache" ]] && ! grep -q "$SHADOW" "$_fwcache" 2>/dev/null; then
       rm -rf "$DEST/local-artifacts/frameworks/llama.cpp-et/build-et"
     fi
-    echo "RISC-V toolchain wrapped via docker; ET_PLATFORM=$SHADOW"
+    echo "RISC-V toolchain wrapped via docker; ET_PLATFORM=$SHADOW ET_INSTALL=$SHADOW"
     "$SHADOW/bin/riscv64-unknown-elf-gcc" --version 2>/dev/null | head -1 || echo "WARN: wrapped gcc still failing" >&2
   else
     echo "WARN: docker unavailable; cannot wrap RISC-V toolchain for the framework build" >&2
   fi
+fi
+
+# Build and prefer the main-owned launcher unless the operator explicitly
+# supplied one. Host-installed launchers can be stale and some older versions
+# return zero after an ET stream error. The input marker keeps warm CI runs fast
+# while ensuring a source change rebuilds the cached binary.
+if [[ -z "${LAUNCHER:-}" ]]; then
+  export LAUNCHER="$WORK_ROOT/build/erbium_soc1sim_argbuf/erbium_soc1sim_argbuf_dynmem"
+  _launcher_marker="${LAUNCHER}.inputs.sha256"
+  _launcher_inputs_sha="$({
+    sha256sum .github/ci/launcher/CMakeLists.txt
+    sha256sum .github/ci/launcher/erbium_soc1sim_argbuf_dynmem.cpp
+  } | sha256sum | awk '{print $1}')"
+  if [[ ! -x "$LAUNCHER" || "$(cat "$_launcher_marker" 2>/dev/null || true)" != "$_launcher_inputs_sha" ]]; then
+    rm -f "$LAUNCHER" "$_launcher_marker"
+    bash .github/ci/scripts/build_launcher.sh
+    printf '%s\n' "$_launcher_inputs_sha" > "$_launcher_marker"
+  fi
+fi
+
+# An explicitly provisioned launcher may be a symlink to a self-contained host
+# bundle. Prefer the libraries built with that launcher over unrelated /opt/et
+# copies; mixing the two produces a runtime ABI symbol failure before execution.
+_launcher_real="$(readlink -f "$LAUNCHER" 2>/dev/null || true)"
+_launcher_lib_dir="$(dirname "${_launcher_real:-$LAUNCHER}")"
+if [[ -f "$_launcher_lib_dir/libetrt.so" \
+  && -f "$_launcher_lib_dir/libdeviceLayer.so" \
+  && -f "$_launcher_lib_dir/libsw-sysemu.so" ]]; then
+  export ET_LIB_PATH="$_launcher_lib_dir:$ET_LIB_PATH"
+  export LD_LIBRARY_PATH="$_launcher_lib_dir:$LD_LIBRARY_PATH"
 fi
 
 reset_board() {
@@ -334,24 +503,6 @@ board_smoke() {
   return 1
 }
 
-if [[ -n "${ET_PLATFORM_SRC:-}" && ! -f "${ET_PLATFORM_SRC}/gp-sdk/device/sdk/lib/erbium-soc1sim/erbium.ld" ]]; then
-  echo "WARN: ET_PLATFORM_SRC=$ET_PLATFORM_SRC has no gp-sdk erbium.ld; searching for a usable et-platform tree" >&2
-  unset ET_PLATFORM_SRC
-fi
-if [[ -z "${ET_PLATFORM_SRC:-}" ]]; then
-  for candidate in "$HOME/et-platform" "$HOME/et" /opt/et-platform /root/et-platform "$DEST/et-platform"; do
-    if [[ -f "${candidate}/gp-sdk/device/sdk/lib/erbium-soc1sim/erbium.ld" ]]; then
-      export ET_PLATFORM_SRC="$candidate"
-      break
-    fi
-  done
-fi
-if [[ -z "${ET_PLATFORM_SRC:-}" ]]; then
-  echo "Cloning shallow et-platform for erbium.ld..."
-  git clone --depth 1 https://github.com/aifoundry-org/et-platform.git "$DEST/et-platform"
-  export ET_PLATFORM_SRC="$DEST/et-platform"
-fi
-
 if [[ ! -x "$LAUNCHER" ]]; then
   echo "Launcher missing at $LAUNCHER; building committed launcher..."
   if ! bash .github/ci/scripts/build_launcher.sh; then
@@ -367,7 +518,7 @@ echo "Host: $(hostname) device=$(stat -c '%a %U:%G' /dev/et0_mgmt) launcher=$LAU
 
 chmod +x .github/ci/scripts/*.sh scripts/*.sh 2>/dev/null || true
 FAIL=0
-if ! board_smoke; then
+if [[ "${SOC3_SKIP_BOARD_SMOKE:-0}" != "1" ]] && ! board_smoke; then
   FAIL=1
 fi
 for model in $MODELS; do

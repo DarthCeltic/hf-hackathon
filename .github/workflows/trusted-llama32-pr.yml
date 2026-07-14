@@ -1,0 +1,235 @@
+name: Trusted Llama 3.2 1B PR gate
+run-name: "Trusted Llama 3.2 1B PR #${{ github.event.pull_request.number || inputs.pr_number }}"
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Open pull request number to evaluate"
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: trusted-llama32-pr-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    name: Resolve trusted candidate
+    runs-on: ubuntu-latest
+    outputs:
+      pr: ${{ steps.pr.outputs.pr }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      actor: ${{ steps.pr.outputs.actor }}
+      association: ${{ steps.pr.outputs.association }}
+      merge_base: ${{ steps.candidate.outputs.merge_base }}
+      targeted: ${{ steps.candidate.outputs.targeted }}
+      mode: ${{ steps.candidate.outputs.mode }}
+      needs_approval: ${{ steps.pr.outputs.needs_approval }}
+    steps:
+      - name: Resolve pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR: ${{ github.event.pull_request.number || '' }}
+          INPUT_PR: ${{ inputs.pr_number || '' }}
+        run: |
+          set -euo pipefail
+          pr="${EVENT_PR:-$INPUT_PR}"
+          payload="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}")"
+          head_sha="$(jq -r .head.sha <<< "$payload")"
+          actor="$(jq -r .user.login <<< "$payload")"
+          association="$(jq -r .author_association <<< "$payload")"
+          needs_approval=0
+          case "$association" in
+            FIRST_TIMER|FIRST_TIME_CONTRIBUTOR|NONE) needs_approval=1 ;;
+          esac
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            needs_approval=0
+          fi
+          {
+            echo "pr=$pr"
+            echo "head_sha=$head_sha"
+            echo "actor=$actor"
+            echo "association=$association"
+            echo "needs_approval=$needs_approval"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Inspect candidate paths
+        id: candidate
+        env:
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/${PR_NUMBER}/head"
+          fetched="$(git rev-parse "refs/remotes/pull/${PR_NUMBER}/head^{commit}")"
+          [[ "$fetched" == "$HEAD_SHA" ]]
+          merge_base="$(git merge-base HEAD "$HEAD_SHA")"
+          python3 .github/ci/scripts/prepare_trusted_llama32_candidate.py \
+            --base "$merge_base" \
+            --head "$HEAD_SHA" \
+            --output-config /tmp/candidate-config.json \
+            --metadata /tmp/candidate-metadata.json
+          targeted="$(jq -r 'if .targeted then 1 else 0 end' /tmp/candidate-metadata.json)"
+          mode="$(jq -r .mode /tmp/candidate-metadata.json)"
+          {
+            echo "merge_base=$merge_base"
+            echo "targeted=$targeted"
+            echo "mode=$mode"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish pending status
+        if: steps.candidate.outputs.targeted == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          NEEDS_APPROVAL: ${{ steps.pr.outputs.needs_approval }}
+        run: |
+          description='Queued against the main-owned Llama contract.'
+          if [[ "${{ steps.candidate.outputs.mode }}" == "regression" ]]; then
+            description='Queued for shared llama.cpp-et regression checks.'
+          fi
+          if [[ "$NEEDS_APPROVAL" == "1" ]]; then
+            description='First-time contributor: maintainer approval is required.'
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+            -f state=pending \
+            -f context=trusted-model/llama32_1b \
+            -f description="$description" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >/dev/null
+
+  board:
+    name: Trusted Llama board evaluation
+    needs: resolve
+    if: needs.resolve.outputs.targeted == '1' && needs.resolve.outputs.needs_approval != '1'
+    runs-on: [self-hosted, Linux, X64, et-soc1, board-ci, single-board]
+    timeout-minutes: 240
+    outputs:
+      verdict_kind: ${{ steps.evaluate.outputs.verdict_kind }}
+    env:
+      HOME: /root
+      SOC3_LOCAL: ${{ vars.SOC3_LOCAL || '1' }}
+      SOC3_HOST: ${{ vars.SOC3_HOST || 'local' }}
+      SOC3_SSH_ALIAS: ${{ vars.SOC3_SSH_ALIAS || 'aifoundry1' }}
+      SOC3_SSH_KEY: ${{ vars.SOC3_SSH_KEY || '/root/.ssh/id_rsa' }}
+      USE_TAILSCALE_SSH: "0"
+      SOC3_BUILD_ET: ${{ vars.AIFOUNDRY1_SOC3_BUILD_ET || '/opt/et' }}
+      SOC3_REMOTE_ET_INSTALL: ${{ vars.AIFOUNDRY1_SOC3_REMOTE_ET_INSTALL || '/opt/et' }}
+      SOC3_REMOTE_ET_PLATFORM: ${{ vars.AIFOUNDRY1_SOC3_REMOTE_ET_PLATFORM || '/opt/et' }}
+      ET_PLATFORM_SRC: ${{ vars.AIFOUNDRY1_ET_PLATFORM_SRC || '' }}
+      ET_LIB_PATH: ${{ vars.AIFOUNDRY1_ET_LIB_PATH || '/opt/et/host:/opt/et/lib' }}
+      GITHUB_ACTOR: ${{ needs.resolve.outputs.actor }}
+      LEADERBOARD_TEAM: ${{ needs.resolve.outputs.actor }}
+      WIKITEXT_RAW_PATH: ${{ vars.AIFOUNDRY1_WIKITEXT_RAW_PATH || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Fetch exact participant commit
+        env:
+          PR_NUMBER: ${{ needs.resolve.outputs.pr }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+        run: |
+          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/${PR_NUMBER}/head"
+          [[ "$(git rev-parse "refs/remotes/pull/${PR_NUMBER}/head^{commit}")" == "$HEAD_SHA" ]]
+
+      - name: Run paired trusted evaluation
+        id: evaluate
+        env:
+          GITHUB_SHA: ${{ needs.resolve.outputs.head_sha }}
+          GITHUB_REF: refs/pull/${{ needs.resolve.outputs.pr }}/head
+        run: |
+          set +e
+          chmod +x .github/ci/scripts/*.sh .github/ci/platform/deploy/*.sh
+          .github/ci/scripts/run_trusted_llama32_candidate.sh \
+            "${{ needs.resolve.outputs.merge_base }}" \
+            "${{ needs.resolve.outputs.head_sha }}" \
+            "$RUNNER_TEMP/trusted-llama32"
+          rc=$?
+          set -e
+          case "$rc" in
+            0) verdict_kind=pass ;;
+            1) verdict_kind=candidate-failure ;;
+            2) verdict_kind=infrastructure-error ;;
+            *) verdict_kind=workflow-error ;;
+          esac
+          echo "verdict_kind=$verdict_kind" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trusted-llama32-pr-${{ needs.resolve.outputs.pr }}
+          path: ${{ runner.temp }}/trusted-llama32/
+          retention-days: 90
+          if-no-files-found: warn
+
+  publish:
+    name: Publish trusted Llama merge status
+    needs: [resolve, board]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish final status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+          TARGETED: ${{ needs.resolve.outputs.targeted }}
+          MODE: ${{ needs.resolve.outputs.mode }}
+          NEEDS_APPROVAL: ${{ needs.resolve.outputs.needs_approval }}
+          BOARD_RESULT: ${{ needs.board.result }}
+          VERDICT_KIND: ${{ needs.board.outputs.verdict_kind }}
+        run: |
+          if [[ "$RESOLVE_RESULT" != "success" ]]; then
+            state=error
+            description='Trusted Llama candidate declaration is invalid.'
+          elif [[ "$TARGETED" != "1" ]]; then
+            state=success
+            description='No Llama 3.2 1B implementation change.'
+          elif [[ "$NEEDS_APPROVAL" == "1" ]]; then
+            state=pending
+            description='First-time contributor: maintainer approval is required.'
+          elif [[ "$BOARD_RESULT" == "success" ]]; then
+            state=success
+            if [[ "$MODE" == "competition" ]]; then
+              description='Eligible Llama track result: quality, speed, and regressions passed.'
+            else
+              description='Shared llama.cpp-et regression checks passed.'
+            fi
+          elif [[ "$VERDICT_KIND" == "infrastructure-error" ]]; then
+            state=error
+            description='Current-main baseline failed; no candidate verdict was produced.'
+          elif [[ "$VERDICT_KIND" == "candidate-failure" ]]; then
+            state=failure
+            description='Candidate failed trusted Llama quality, speed, or regression limits.'
+          else
+            state=error
+            description="Trusted Llama workflow result: ${BOARD_RESULT}."
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+            -f state="$state" \
+            -f context=trusted-model/llama32_1b \
+            -f description="$description" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >/dev/null
+          [[ "$state" != "failure" ]]

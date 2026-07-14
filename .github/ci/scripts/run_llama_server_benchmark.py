@@ -230,10 +230,43 @@ def ensure_llama_cpp_build(mcfg: dict[str, Any], lcfg: dict[str, Any], server_bi
     source_dir = materialize_artifact(mcfg, str(source_artifact))
     if not is_dir(source_dir):
         return
+    source_cfg = artifact_config(mcfg, str(source_artifact))
+    source_revision = os.environ.get("LLAMA_CPP_ET_SOURCE_REVISION") or str(
+        source_cfg.get("upstream", {}).get("revision") or ""
+    )
+    revision_stamp = workdir / ".hf-source-revision"
     workdir_artifact = str(lcfg.get("workdir_artifact", "llama_cpp_build"))
     workdir_override = artifact_has_env_override(mcfg, workdir_artifact, "LFM25_LLAMA_WORKDIR")
+    binaries_ready = is_file(server_bin) and (ppl_bin is None or is_file(ppl_bin))
+    stamped_revision = revision_stamp.read_text().strip() if revision_stamp.is_file() else ""
+    reuse_trusted_build = os.environ.get("TRUSTED_LLAMA_REUSE_BUILD") == "1"
+    if binaries_ready and source_revision and stamped_revision == source_revision:
+        return
+    if binaries_ready and source_revision and stamped_revision != source_revision:
+        revision_keyed_workdir = workdir.name == f"build-{source_revision}"
+        if (
+            workdir_override
+            and not os.environ.get("TRUSTED_LLAMA_BUILD_KEY")
+            and not revision_keyed_workdir
+        ):
+            raise RuntimeError(
+                f"operator-provided llama.cpp workdir {workdir} was built from "
+                f"{stamped_revision or 'an unknown revision'}, not {source_revision}"
+            )
+        if reuse_trusted_build:
+            print(
+                f"Incrementally rebuilding trusted llama.cpp workdir from "
+                f"{stamped_revision or 'unknown'} to {source_revision}"
+            )
+        else:
+            print(
+                f"Removing llama.cpp build for stale source revision "
+                f"{stamped_revision or 'unknown'}; current revision is {source_revision}"
+            )
+            shutil.rmtree(workdir)
+        binaries_ready = False
     if workdir_override:
-        if is_file(server_bin) and (ppl_bin is None or is_file(ppl_bin)):
+        if binaries_ready:
             return
         cached_source = cmake_cached_source(workdir)
         if cached_source is not None and cached_source.resolve(strict=False) != source_dir.resolve(strict=False):
@@ -244,20 +277,26 @@ def ensure_llama_cpp_build(mcfg: dict[str, Any], lcfg: dict[str, Any], server_bi
             )
     else:
         reset_stale_cmake_build(workdir, source_dir)
-    if is_file(server_bin) and (ppl_bin is None or is_file(ppl_bin)):
+    if binaries_ready:
         return
     build_cfg = artifact_config(mcfg, str(lcfg.get("workdir_artifact", "llama_cpp_build"))).get("build", {})
     cmake = str(build_cfg.get("cmake", "cmake"))
     jobs = str(build_cfg.get("jobs", os.environ.get("LLAMA_CPP_ET_BUILD_JOBS", os.cpu_count() or 4)))
     configure_args = [str(arg) for arg in build_cfg.get("configure_args", ["-DGGML_ET=ON", "-DCMAKE_BUILD_TYPE=Release"])]
     build_args = [str(arg) for arg in build_cfg.get("build_args", ["--config", "Release"])]
+    build_targets = [str(target) for target in build_cfg.get("targets", [])]
     workdir.parent.mkdir(parents=True, exist_ok=True)
     configure = [cmake, "-S", str(source_dir), "-B", str(workdir), *configure_args]
-    build = [cmake, "--build", str(workdir), *build_args, "-j", jobs]
+    build = [cmake, "--build", str(workdir), *build_args]
+    if build_targets:
+        build.extend(["--target", *build_targets])
+    build.extend(["-j", jobs])
     print("$ " + " ".join(configure))
     subprocess.run(configure, check=True)
     print("$ " + " ".join(build))
     subprocess.run(build, check=True)
+    if source_revision:
+        revision_stamp.write_text(source_revision + "\n")
 
 
 def sha256_file(path: Path) -> str:
@@ -269,6 +308,8 @@ def sha256_file(path: Path) -> str:
 
 
 def run_url() -> str:
+    if os.environ.get("BENCHMARK_RUN_URL"):
+        return os.environ["BENCHMARK_RUN_URL"]
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
     repo = os.environ.get("GITHUB_REPOSITORY", "local")
     run_id = os.environ.get("GITHUB_RUN_ID", "0")
@@ -296,9 +337,10 @@ def score_common(model: str, variant: str, note: str = "") -> dict[str, Any]:
         "emu_cycle_last": None,
         "elapsed_s": None,
         "note": note,
-        "sha": os.environ.get("GITHUB_SHA", "local"),
-        "ref": os.environ.get("GITHUB_REF", "local"),
+        "sha": os.environ.get("BENCHMARK_SHA") or os.environ.get("GITHUB_SHA", "local"),
+        "ref": os.environ.get("BENCHMARK_REF") or os.environ.get("GITHUB_REF", "local"),
         "team": os.environ.get("LEADERBOARD_TEAM") or os.environ.get("GITHUB_ACTOR", "local"),
+        "benchmark_device": os.environ.get("BENCHMARK_DEVICE", "unknown"),
         "run_url": run_url(),
         "scored_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -730,6 +772,17 @@ def main() -> int:
     failures.extend(validate_log(log_text, request_path, require_full_offload=bool(lcfg.get("require_full_offload", True))))
     failures.extend(ppl_failures)
 
+    validation_contract_sha256 = None
+    validation_contract = mcfg.get("reference_contract")
+    if validation_contract:
+        validation_contract_path = Path(str(validation_contract))
+        if not validation_contract_path.is_absolute():
+            validation_contract_path = REPO_ROOT / validation_contract_path
+        if validation_contract_path.is_file():
+            validation_contract_sha256 = sha256_file(validation_contract_path)
+        else:
+            failures.append(f"missing validation contract: {validation_contract_path}")
+
     passed = not failures
     ppl = ppl_metrics.get("perplexity")
     pass_note = "llama-server ET completion valid"
@@ -751,6 +804,7 @@ def main() -> int:
             "perplexity_prompt_tokens_per_second": ppl_metrics.get("perplexity_prompt_tokens_per_second"),
             "elapsed_s": elapsed,
             "content_prefix": content[:200],
+            "validation_contract_sha256": validation_contract_sha256,
             "valid_note": note,
             "note": note,
         }

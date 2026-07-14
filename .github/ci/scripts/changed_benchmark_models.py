@@ -42,6 +42,7 @@ GENERIC_BOARD_INFRA_PATHS = {
 
 RUNNER_INFRA_PATHS = {
     ".github/ci/scripts/run_llama_server_benchmark.py": "llama_server",
+    ".github/ci/scripts/run_smolvlm2_video_benchmark.py": "smolvlm2_video",
 }
 
 MODEL_CODE_SUFFIXES = {
@@ -70,6 +71,23 @@ RUNTIME_CODE_SUFFIXES = {
 
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
 YOLO_REAL_IMAGE_DETECTIONS_VALIDATION = "yolo_real_image_detections"
+YOLO_REFERENCE_DETECTIONS_ACCURACY = "yolo_reference_detections"
+YOLO_REFERENCE_INFRA_PATHS = {
+    ".github/ci/reference/yolo.json",
+    ".github/ci/scripts/prepare_trusted_yolo_tree.py",
+    ".github/ci/scripts/refresh_trusted_yolo_prs.sh",
+    ".github/ci/scripts/run_yolo_host_reference.sh",
+    ".github/ci/scripts/trusted_yolo_input_hash.sh",
+    ".github/workflows/trusted-yolo-pr.yml",
+}
+SMOLVLM2_REFERENCE_INFRA_PATHS = {
+    ".github/ci/reference/smolvlm2_500m_video.json",
+}
+LLAMA32_SUBMISSION_PATHS = {
+    "ported_models/llama_cpp_et/submissions/llama32_1b.json",
+    "ported_models/llama_cpp_et/submissions/llama32_1b.track.json",
+}
+MODEL_PORT_CLAIM_ROOT = "ported_models/submissions/model_ports"
 ZERO_BLOB_PRIMARY = "zero2m.bin"
 
 
@@ -181,6 +199,8 @@ def collect_artifact_refs(value: Any) -> set[str]:
                 continue
             if key.endswith("_artifact") and isinstance(nested, str):
                 refs.add(nested)
+            elif key.endswith("_artifacts") and isinstance(nested, list):
+                refs.update(str(item) for item in nested if isinstance(item, str))
             else:
                 refs.update(collect_artifact_refs(nested))
     elif isinstance(value, list):
@@ -298,6 +318,14 @@ def model_satisfies_validation(model_cfg: dict[str, Any], requirement: str | Non
     if not requirement:
         return True
     if requirement == YOLO_REAL_IMAGE_DETECTIONS_VALIDATION:
+        if model_cfg.get("runner", "elf") != "elf":
+            return False
+        score = model_cfg.get("score", {})
+        if score.get("metric") != "kernel_wait_s" or score.get("higher_is_better") is not False:
+            return False
+        source = repo_rel(model_cfg.get("source")) or ""
+        if not is_under(source, "ported_models/yolo/src"):
+            return False
         validation = model_cfg.get("validation", {})
         if not isinstance(validation, dict):
             return False
@@ -310,18 +338,71 @@ def model_satisfies_validation(model_cfg: dict[str, Any], requirement: str | Non
             min_image_count = int(validation.get("min_image_count", 5))
         except (TypeError, ValueError):
             return False
+        contract_value = validation.get("reference_contract") or model_cfg.get(
+            "reference_contract"
+        )
+        if not contract_value:
+            return False
+        contract_path = Path(contract_value)
+        if not contract_path.is_absolute():
+            contract_path = REPO_ROOT / contract_path
+        try:
+            contract = json.loads(contract_path.read_text())
+            fixtures = contract["fixtures"]["cases"]
+            board_abi = contract["board_abi"]
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            return False
+        fixed_cases = {
+            str(case["name"]): case
+            for case in fixtures
+            if isinstance(case, dict) and case.get("name") and case.get("asset")
+        }
+        if len(fixed_cases) < min_image_count:
+            return False
+        if [str(case.get("name")) for case in cases] != list(fixed_cases):
+            return False
         valid_cases = 0
         for case in cases:
             if not isinstance(case, dict) or not case.get("name"):
                 continue
-            accuracy = case.get("accuracy", {})
-            if not isinstance(accuracy, dict) or accuracy.get("kind") != "yolo_detections":
+            name = str(case["name"])
+            fixture = fixed_cases.get(name)
+            if fixture is None:
                 continue
-            expected = accuracy.get("expected", [])
-            if not isinstance(expected, list) or not expected:
+            accuracy = case.get("accuracy", {})
+            if (
+                not isinstance(accuracy, dict)
+                or accuracy.get("kind") != YOLO_REFERENCE_DETECTIONS_ACCURACY
+                or accuracy.get("reference_case") != name
+            ):
+                continue
+            try:
+                if int(str(accuracy.get("offset")), 0) != int(
+                    str(board_abi["detections_offset"]), 0
+                ):
+                    continue
+                if int(accuracy.get("max_detections", 0)) != int(
+                    board_abi["max_detections"]
+                ):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            expected_asset = str(fixture["asset"])
+            prefix = "ported_models/yolo/assets/"
+            if not expected_asset.startswith(prefix):
+                continue
+            expected_load = norm(expected_asset[len(prefix) :])
+            input_paths = {
+                norm(path)
+                for load in case.get("file_loads", [])
+                if str(load.get("address")) == str(board_abi["input_address"])
+                for path in (load.get("paths") or [load.get("path")])
+                if path
+            }
+            if expected_load not in input_paths:
                 continue
             valid_cases += 1
-        return valid_cases >= min_image_count
+        return valid_cases >= min_image_count and valid_cases == len(fixed_cases) == len(cases)
     return False
 
 
@@ -582,6 +663,21 @@ def main() -> int:
             if honor_global:
                 shared_all = global_change or shared_all
             continue
+        if path in YOLO_REFERENCE_INFRA_PATHS:
+            selected.add("yolo")
+            continue
+        if path in SMOLVLM2_REFERENCE_INFRA_PATHS:
+            selected.add("smolvlm2_500m_video")
+            continue
+        if path in LLAMA32_SUBMISSION_PATHS:
+            selected.add("llama32_1b")
+            continue
+        if is_under(path, MODEL_PORT_CLAIM_ROOT) and path.endswith(".json"):
+            claim = read_json(path)
+            model = str((claim or {}).get("benchmark_model") or "")
+            if model in cfg.get("models", {}) and model_supports_target(cfg, model, args.target):
+                selected.add(model)
+            continue
         if path in GENERIC_BOARD_INFRA_PATHS or is_under(path, ".github/ci/platform/"):
             if honor_global:
                 shared_all = True
@@ -642,6 +738,16 @@ def main() -> int:
     if args.unregistered_out:
         Path(args.unregistered_out).write_text(" ".join(unregistered))
     uncovered = uncovered_runtime_code_paths(cfg, changed_files, args.target)
+    if (
+        "yolo" in selected
+        and not model_satisfies_validation(
+            cfg["models"]["yolo"], YOLO_REAL_IMAGE_DETECTIONS_VALIDATION
+        )
+    ):
+        source = repo_rel(cfg["models"]["yolo"].get("source"))
+        if source and source not in uncovered:
+            uncovered.append(source)
+            uncovered.sort()
     if args.uncovered_out:
         Path(args.uncovered_out).write_text(" ".join(uncovered))
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -39,6 +40,17 @@ def baseline_variant(model: str) -> str | None:
     return str(variant) if variant else None
 
 
+def validation_contract_sha256(model: str) -> str | None:
+    cfg = load_config(CONFIG_PATH)
+    value = cfg.get("models", {}).get(model, {}).get("reference_contract")
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def selected_models(value: str | None) -> list[str]:
     names = configured_models()
     if not value:
@@ -64,6 +76,13 @@ def load_board(model: str) -> list:
     required_variant = baseline_variant(model)
     if required_variant:
         entries = [entry for entry in entries if entry.get("variant") == required_variant]
+    required_contract_sha = validation_contract_sha256(model)
+    if required_contract_sha:
+        entries = [
+            entry
+            for entry in entries
+            if entry.get("validation_contract_sha256") == required_contract_sha
+        ]
     return entries
 
 
@@ -81,7 +100,9 @@ def save_board(model: str, entries: list) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
-def merge_entry(entries: list, score: dict) -> list:
+def merge_entry(
+    entries: list, score: dict, *, participant_login: str | None = None
+) -> list:
     if not score.get("passed"):
         return entries
 
@@ -89,11 +110,13 @@ def merge_entry(entries: list, score: dict) -> list:
     metric_value = score.get(metric)
     if metric_value is None:
         return entries
-    team = score.get("team") or "unknown"
+    team = participant_login or score.get("team") or "unknown"
+    participant_login = participant_login or team
     sha = score.get("sha") or ""
 
     new = {
         "team": team,
+        "participant_login": participant_login,
         "variant": score.get("variant"),
         "kernel_wait_s": score.get("kernel_wait_s"),
         "kernel_wait_per_image_s": score.get("kernel_wait_per_image_s"),
@@ -106,6 +129,7 @@ def merge_entry(entries: list, score: dict) -> list:
         "perplexity_error": score.get("perplexity_error"),
         "perplexity_tokens": score.get("perplexity_tokens"),
         "perplexity_prompt_tokens_per_second": score.get("perplexity_prompt_tokens_per_second"),
+        "validation_contract_sha256": score.get("validation_contract_sha256"),
         "sha": sha,
         "ref": score.get("ref"),
         "run_url": score.get("run_url"),
@@ -114,8 +138,12 @@ def merge_entry(entries: list, score: dict) -> list:
     if metric not in new:
         new[metric] = score.get(metric)
 
-    # Replace same team's prior entry, then sort.
-    entries = [e for e in entries if e.get("team") != team]
+    # Replace the same canonical participant's prior entry, then sort.
+    entries = [
+        e
+        for e in entries
+        if (e.get("participant_login") or e.get("team")) != participant_login
+    ]
     entries.append(new)
     entries.sort(
         key=lambda e: e.get(metric) if e.get(metric) is not None else (-1e99 if higher_is_better else 1e99),
@@ -128,6 +156,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scores-dir", required=True)
     parser.add_argument("--models", default="")
+    parser.add_argument("--participant-login", default="")
     args = parser.parse_args()
 
     scores_dir = Path(args.scores_dir)
@@ -138,7 +167,11 @@ def main() -> int:
             continue
         score = json.loads(score_path.read_text())
         before = load_board(model)
-        after = merge_entry(before, score)
+        after = merge_entry(
+            before,
+            score,
+            participant_login=args.participant_login or None,
+        )
         if after != before:
             save_board(model, after)
             changed = True

@@ -1,0 +1,63 @@
+name: Label hackathon tracks
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: track-labels-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Label from changed files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The write token is used only with automation loaded from the trusted
+      # base commit. Participant code is never checked out or executed.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Test classifier
+        run: python3 -m unittest discover -s .github/ci/scripts -p 'test_track_labels.py'
+
+      - name: Classify and synchronize labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
+            --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/pr-files.json"
+          python3 .github/ci/scripts/track_labels.py \
+            "$RUNNER_TEMP/pr-files.json" > "$RUNNER_TEMP/track-labels.json"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            --jq '[.labels[].name]' > "$RUNNER_TEMP/current-labels.json"
+          jq -s \
+            '{labels: (((.[0] - .[1].managed_labels) + .[1].desired_labels) | unique)}' \
+            "$RUNNER_TEMP/current-labels.json" "$RUNNER_TEMP/track-labels.json" \
+            > "$RUNNER_TEMP/final-labels.json"
+          gh api --method PUT \
+            "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" \
+            --input "$RUNNER_TEMP/final-labels.json" >/dev/null
+
+          changed="$(jq -r '.changed_file_count' "$RUNNER_TEMP/track-labels.json")"
+          roots="$(jq -r '.new_port_roots | join(", ") | if . == "" then "none" else . end' "$RUNNER_TEMP/track-labels.json")"
+          labels="$(jq -r '.desired_labels | join(", ")' "$RUNNER_TEMP/track-labels.json")"
+          {
+            echo "## Hackathon track labels"
+            echo
+            echo "Changed files: $changed"
+            echo
+            echo "New port roots: $roots"
+            echo
+            echo "Applied labels: $labels"
+          } >> "$GITHUB_STEP_SUMMARY"
