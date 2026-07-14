@@ -99,6 +99,14 @@ fi
 if ! grep -qF 'Remove participant workspace' .github/workflows/trusted-model-port-pr.yml; then
   bad "trusted model-port workflow must clean the persistent board workspace"
 fi
+if grep -qE '^ {6}SOC3_DEST: \$\{\{ runner\.temp \}\}/trusted-model-port-board$' \
+  .github/workflows/trusted-model-port-pr.yml; then
+  bad "runner.temp is unavailable in job-level env; scope SOC3_DEST to board steps"
+fi
+if [[ "$(grep -cF 'SOC3_DEST: ${{ runner.temp }}/trusted-model-port-board' \
+  .github/workflows/trusted-model-port-pr.yml)" -ne 2 ]]; then
+  bad "trusted model-port board and cleanup steps must share the runner-temp workspace"
+fi
 if ! grep -qF 'et_platform_src_complete' .github/ci/platform/deploy/soc3-benchmark.sh \
   || ! grep -qF '_launcher_lib_dir' .github/ci/platform/deploy/soc3-benchmark.sh; then
   bad "board deployment must bind a complete platform tree and matching launcher libraries"

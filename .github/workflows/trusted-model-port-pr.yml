@@ -166,7 +166,6 @@ jobs:
       SOC3_SKIP_BOARD_SMOKE: "1"
       TRUSTED_BOARD_LAUNCHER_TIMEOUT_CAP: "100"
       TRUSTED_BOARD_OUTER_TIMEOUT_CAP: "120"
-      SOC3_DEST: ${{ runner.temp }}/trusted-model-port-board
     steps:
       - uses: actions/checkout@v4
         with:
@@ -207,6 +206,7 @@ jobs:
         id: evaluate
         env:
           TRUSTED_MAIN_SHA: ${{ steps.candidate.outputs.trusted_main_sha }}
+          SOC3_DEST: ${{ runner.temp }}/trusted-model-port-board
         run: |
           set +e
           chmod +x .github/ci/scripts/*.sh .github/ci/platform/deploy/*.sh
@@ -272,6 +272,8 @@ jobs:
 
       - name: Remove participant workspace
         if: always()
+        env:
+          SOC3_DEST: ${{ runner.temp }}/trusted-model-port-board
         run: |
           set -euo pipefail
           case "$SOC3_DEST" in
