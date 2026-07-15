@@ -2,7 +2,7 @@
 
 **Path:** GGUF (llama.cpp-et) — VLM (text + image → text)
 **Priority:** #4 — Sweet spot of quality vs size, reuses SmolLM2-360M
-**Status:** Research complete, ready for implementation
+**Status:** Implemented as multimodal board port — `smolvlm2_video` runner + reference contract (PR #27)
 
 ---
 
