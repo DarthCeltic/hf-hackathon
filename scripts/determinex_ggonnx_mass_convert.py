@@ -18,11 +18,21 @@ STATE_PATH = LOG_DIR / "ggonnx_state.json"
 WATCH_LOCK_PATH = LOG_DIR / "ggonnx_watch.lock"
 PORTED_MODELS_DIR = ROOT / "ported_models"
 
+# Found live 2026-07-10: the original 4 "onnx-models/*" repo IDs here were
+# all fabricated -- none exist on HuggingFace (verified via
+# HfApi.model_info(), all 404/401). Replaced with real, ungated repos from
+# trusted orgs (onnx-community is HF's own maintained ONNX-export org; the
+# bare "onnx" org is the official ONNX model zoo), each confirmed to
+# actually contain a .onnx file before being added here. Dropped the
+# yolov8n slot outright: no ONNX export exists in the official
+# Ultralytics/YOLOv8 repo (only .pt weights), and no community re-export
+# cleared the same trust bar as the other three -- forcing a low-confidence
+# pick just to keep a 4th entry isn't worth it, and a YOLOv8-style detector
+# is already well-covered by this repo's own yolo_m30 kernel.
 MODELS = [
-    {"name": "resnet18", "repo": "onnx-models/resnet18"},
-    {"name": "mobilenetv2", "repo": "onnx-models/mobilenetv2"},
-    {"name": "efficientnet", "repo": "onnx-models/efficientnet"},
-    {"name": "yolov8n", "repo": "onnx-models/yolov8n"}
+    {"name": "resnet18", "repo": "onnx-community/resnet-18-ONNX"},
+    {"name": "mobilenetv2", "repo": "onnx-community/mobilenet_v2_1.0_224"},
+    {"name": "efficientnet", "repo": "onnx/EfficientNet-Lite4"},
 ]
 
 def _now() -> str:
