@@ -32,7 +32,7 @@ Results are from real ET-SoC1 silicon via the main-branch board workflow. Each m
 | qwen25_05b | CI | `Qwen2.5-0.5B-Instruct-Q8_0` | Decode tokens/s | 11.39 | 16.97 (+/- 3.53) | [443e451](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29263753097) |
 | qwen3_8b | Ashish Soni | `Qwen3-8B-Q8_0` | Decode tokens/s | 3.30 | 10.50 (+/- 2.29) | [af95906](https://github.com/aifoundry-org/hf-hackathon/actions/runs/28949135516) |
 | smollm2_135m | VenuAditya | `SmolLM2-135M-Instruct-Q8_0` | Decode tokens/s | 11.62 | 25.43 (+/- 5.40) | [51d3b3d](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29412726668) |
-| smollm2_360m | - | `-` | Decode tokens/s | - | - | - |
+| smollm2_360m | VenuAditya | `SmolLM2-360M-Instruct-Q8_0` | Decode tokens/s | 10.05 | 18.31 (+/- 3.83) | [5e193cf](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29412732448) |
 | smollm2_17b | VenuAditya | `SmolLM2-1.7B-Instruct-Q8_0` | Decode tokens/s | 9.29 | 13.82 (+/- 3.01) | [52662db](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29412442715) |
 | deepseek_r1_15b | Afonso Oliveira | `DeepSeek-R1-Distill-Qwen-1.5B-Q8_0` | Decode tokens/s | 7.92 | 47.36 (+/- 12.09) | [44e0041](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29103369466) |
 | smolvlm2_500m_video | CI | `SmolVLM2-500M-Video-Instruct` | ET firmware cycles | 10821492678 | 22.28 (+/- 4.80) | [443e451](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29263753097) |
