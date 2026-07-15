@@ -16,8 +16,10 @@ LABELS = {
 }
 MANAGED_LABELS = tuple(LABELS.values())
 
-# Add the Week 2 model or tool path after the challenge is announced.
-WEEK2_PREFIXES = ()
+# Week 2 challenge: SmolVLM2-500M-Video-Instruct on ET-SoC1.
+# Any PR touching the llama_cpp_et model directory or submodule qualifies.
+WEEK2_PREFIXES = ("ported_models/llama_cpp_et",)
+
 LLAMA32_RE = re.compile(
     r"(^|[/_.-])(?:llama32[_-]1b|llama[_-]3[._-]2[_-]1b)([/_.-]|$)", re.I
 )
