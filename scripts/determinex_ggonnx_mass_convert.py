@@ -10,9 +10,7 @@ import json
 import os
 import subprocess
 import time
-from dataclasses import asdict, dataclass
 from pathlib import Path
-from huggingface_hub import HfApi
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = ROOT / "logs"
@@ -103,6 +101,11 @@ def main():
     parser.add_argument("--interval", type=int, default=300, help="Watch interval in seconds")
     parser.add_argument("--limit", type=int, default=10, help="Max models to process per run")
     parser.add_argument("--timeout", type=int, default=1800, help="Subprocess timeout in seconds")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Record planned work without invoking ggonnx or marking models done",
+    )
     args = parser.parse_args()
 
     locked, fd, msg = acquire_watch_lock()
@@ -127,28 +130,36 @@ def main():
 
                 print(f"[{_now()}] Processing {name} ({repo})...")
                 
-                out_dir = PORTED_MODELS_DIR / name
-                out_dir.mkdir(parents=True, exist_ok=True)
-
                 try:
-                    # Execute ggonnx transpiler properly with a timeout
-                    print(f"Running ggonnx on {repo}...")
-                    # We skip the actual run in dry-run/hackathon stub environments if ggonnx isn't installed
-                    # by checking if it exists.
-                    try:
-                        subprocess.run(
-                            ["ggonnx", repo, "--out", str(out_dir)],
-                            check=True,
-                            timeout=args.timeout,
-                            capture_output=True,
-                            text=True
-                        )
-                    except FileNotFoundError:
-                        print(f"[{_now()}] ggonnx binary not found, simulating success for hackathon pipeline.")
-                        time.sleep(2)
+                    if args.dry_run:
+                        state[name] = {"status": "planned", "ts": _now(), "repo": repo}
+                        print(f"[{_now()}] Planned {name}; dry-run did not invoke ggonnx.")
+                        save_state(state)
+                        processed += 1
+                        continue
 
-                    state[name] = {"status": "done", "ts": _now()}
+                    out_dir = PORTED_MODELS_DIR / name
+                    out_dir.mkdir(parents=True, exist_ok=True)
+
+                    print(f"Running ggonnx on {repo}...")
+                    subprocess.run(
+                        ["ggonnx", repo, "--out", str(out_dir)],
+                        check=True,
+                        timeout=args.timeout,
+                        capture_output=True,
+                        text=True
+                    )
+
+                    state[name] = {"status": "done", "ts": _now(), "repo": repo}
                     print(f"[{_now()}] Successfully generated {name} artifacts.")
+                except FileNotFoundError:
+                    print(f"[{_now()}] FAILED {name}: ggonnx binary not found")
+                    state[name] = {
+                        "status": "error",
+                        "ts": _now(),
+                        "repo": repo,
+                        "error": "ggonnx binary not found",
+                    }
                 except subprocess.TimeoutExpired:
                     print(f"[{_now()}] TIMEOUT on {name} after {args.timeout}s.")
                     state[name] = {"status": "timeout", "ts": _now()}
