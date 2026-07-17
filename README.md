@@ -23,7 +23,7 @@ Results are from real ET-SoC1 silicon via the main-branch board workflow. Each m
 | Model | Best participant | Variant | Metric | Score | PPL | Run |
 |-------|------------------|---------|--------|-------|-----|-----|
 | yolo | AFOliveira | `yolo_m30` | Mean end-to-end latency | 0.917813s | - | [6ab913e](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29435700695) |
-| dncnn | karabambus | `dncnn20l64` | Denoise kernel wait (64x64 tile) | 0.221240s | - | [a967098](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29410925196) |
+| dncnn | AFOliveira | `dncnn20l64` | Denoise kernel wait (64x64 tile) | 0.221202s | - | [f84e480](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29604398578) |
 | lfm25 | Afonso Oliveira | `LFM2.5-1.2B-Instruct-Q8_0` | Decode tokens/s | 3.12 | 21.70 (+/- 4.45) | [44e0041](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29103369466) |
 | llama32_1b | CI | `Llama-3.2-1B-Instruct-Q8_0` | Decode tokens/s | 13.43 | 15.31 (+/- 2.89) | [443e451](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29263753097) |
 | gemma3n_e2b | CI | `gemma-3n-E2B-it-Q8_0` | Decode tokens/s | 1.57 | 32.83 (+/- 10.20) | [443e451](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29263753097) |
