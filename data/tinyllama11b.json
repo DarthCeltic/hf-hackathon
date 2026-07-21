@@ -2,7 +2,7 @@
   "model": "tinyllama11b",
   "metric": "tokens_per_second",
   "lower_is_better": false,
-  "updated_at": "2026-07-21T15:25:05.657101+00:00",
+  "updated_at": "2026-07-21T15:37:58.596385+00:00",
   "entries": [
     {
       "team": "ChiruGuru99",
@@ -31,20 +31,20 @@
       "variant": "TinyLlama-1.1B-Chat-v1.0-Q8_0",
       "kernel_wait_s": null,
       "kernel_wait_per_image_s": null,
-      "tokens_per_second": 11.348027452769745,
-      "prompt_tokens_per_second": 52.828062266676056,
+      "tokens_per_second": 11.359071490564574,
+      "prompt_tokens_per_second": 51.024003148909905,
       "prompt_tokens": 21,
       "completion_tokens": 96,
       "total_tokens": 117,
       "perplexity": 29.2266,
       "perplexity_error": 7.70301,
       "perplexity_tokens": 512,
-      "perplexity_prompt_tokens_per_second": 81.27,
+      "perplexity_prompt_tokens_per_second": 76.96,
       "validation_contract_sha256": null,
-      "sha": "eb889359d111905cb96de4cfaa36d49cd295829e",
+      "sha": "703dca59a8db46bbc3a98da6103b61a649564c65",
       "ref": "refs/heads/main",
-      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29840841497",
-      "scored_at": "2026-07-21T15:20:23.985998+00:00"
+      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29844219494",
+      "scored_at": "2026-07-21T15:33:10.801562+00:00"
     },
     {
       "team": "Afonso Oliveira",

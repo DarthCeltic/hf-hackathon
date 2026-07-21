@@ -2,7 +2,7 @@
   "model": "rwkv7_15b",
   "metric": "tokens_per_second",
   "lower_is_better": false,
-  "updated_at": "2026-07-21T15:25:05.681516+00:00",
+  "updated_at": "2026-07-21T15:37:58.617227+00:00",
   "entries": [
     {
       "team": "ChiruGuru99",
@@ -26,6 +26,27 @@
       "scored_at": "2026-07-21T14:23:27.966485+00:00"
     },
     {
+      "team": "DarthCeltic",
+      "participant_login": "DarthCeltic",
+      "variant": "rwkv7-1.5B-world-q8_0",
+      "kernel_wait_s": null,
+      "kernel_wait_per_image_s": null,
+      "tokens_per_second": 1.6520125694753025,
+      "prompt_tokens_per_second": 10.095593392255966,
+      "prompt_tokens": 17,
+      "completion_tokens": 96,
+      "total_tokens": 113,
+      "perplexity": 11.7918,
+      "perplexity_error": 2.14428,
+      "perplexity_tokens": 512,
+      "perplexity_prompt_tokens_per_second": 54.19,
+      "validation_contract_sha256": "145e4c2829cf9a1b020afcff6a7775a5d072cc435a9e2a90903bd6b43b7f10e5",
+      "sha": "703dca59a8db46bbc3a98da6103b61a649564c65",
+      "ref": "refs/heads/main",
+      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29844219494",
+      "scored_at": "2026-07-21T15:33:33.419733+00:00"
+    },
+    {
       "team": "CI",
       "variant": "rwkv7-1.5B-world-q8_0",
       "kernel_wait_s": null,
@@ -44,27 +65,6 @@
       "ref": "refs/heads/main",
       "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29263753097",
       "scored_at": "2026-07-13T15:57:04.282543+00:00"
-    },
-    {
-      "team": "DarthCeltic",
-      "participant_login": "DarthCeltic",
-      "variant": "rwkv7-1.5B-world-q8_0",
-      "kernel_wait_s": null,
-      "kernel_wait_per_image_s": null,
-      "tokens_per_second": 1.6490491814317407,
-      "prompt_tokens_per_second": 10.026854275008303,
-      "prompt_tokens": 17,
-      "completion_tokens": 96,
-      "total_tokens": 113,
-      "perplexity": 11.7918,
-      "perplexity_error": 2.14428,
-      "perplexity_tokens": 512,
-      "perplexity_prompt_tokens_per_second": 55.71,
-      "validation_contract_sha256": "145e4c2829cf9a1b020afcff6a7775a5d072cc435a9e2a90903bd6b43b7f10e5",
-      "sha": "eb889359d111905cb96de4cfaa36d49cd295829e",
-      "ref": "refs/heads/main",
-      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29840841497",
-      "scored_at": "2026-07-21T15:20:46.561902+00:00"
     },
     {
       "team": "Afonso Oliveira",
