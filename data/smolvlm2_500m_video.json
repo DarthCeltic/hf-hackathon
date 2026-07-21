@@ -2,7 +2,7 @@
   "model": "smolvlm2_500m_video",
   "metric": "pmc_cycles",
   "lower_is_better": true,
-  "updated_at": "2026-07-21T16:08:36.904952+00:00",
+  "updated_at": "2026-07-21T16:58:50.280301+00:00",
   "entries": [
     {
       "team": "RehanQasim-dev",
@@ -25,6 +25,28 @@
       "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29846814130",
       "scored_at": "2026-07-21T16:08:06.371603+00:00",
       "pmc_cycles": 1270809440
+    },
+    {
+      "team": "sherahmad1",
+      "participant_login": "sherahmad1",
+      "variant": "SmolVLM2-500M-Video-Instruct",
+      "kernel_wait_s": null,
+      "kernel_wait_per_image_s": null,
+      "tokens_per_second": 14.294358969472015,
+      "prompt_tokens_per_second": null,
+      "prompt_tokens": null,
+      "completion_tokens": null,
+      "total_tokens": null,
+      "perplexity": 22.2822,
+      "perplexity_error": 4.80068,
+      "perplexity_tokens": 512,
+      "perplexity_prompt_tokens_per_second": null,
+      "validation_contract_sha256": "3dc72496006532eccf0c45c0400ad07b5e9655b15e1b15e644b26de064b4db56",
+      "sha": "052b186bf65aa737b091149725acca8ec8d9f5be",
+      "ref": "refs/heads/main",
+      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29849617601",
+      "scored_at": "2026-07-21T16:58:15.766604+00:00",
+      "pmc_cycles": 2171886500
     },
     {
       "team": "noor-malaika",
