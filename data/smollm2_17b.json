@@ -2,7 +2,7 @@
   "model": "smollm2_17b",
   "metric": "tokens_per_second",
   "lower_is_better": false,
-  "updated_at": "2026-07-21T15:25:05.782265+00:00",
+  "updated_at": "2026-07-21T15:48:07.900999+00:00",
   "entries": [
     {
       "team": "ChiruGuru99",
@@ -66,6 +66,27 @@
       "ref": "refs/heads/main",
       "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29412442715",
       "scored_at": "2026-07-15T11:40:36.515690+00:00"
+    },
+    {
+      "team": "karabambus",
+      "participant_login": "karabambus",
+      "variant": "SmolLM2-1.7B-Instruct-Q8_0",
+      "kernel_wait_s": null,
+      "kernel_wait_per_image_s": null,
+      "tokens_per_second": 8.867327325657492,
+      "prompt_tokens_per_second": 47.52931440361894,
+      "prompt_tokens": 17,
+      "completion_tokens": 96,
+      "total_tokens": 113,
+      "perplexity": 13.8216,
+      "perplexity_error": 3.00781,
+      "perplexity_tokens": 512,
+      "perplexity_prompt_tokens_per_second": 81.67,
+      "validation_contract_sha256": null,
+      "sha": "6225cb88199aa7cb8758d920edeac207ab03d556",
+      "ref": "refs/heads/main",
+      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29845090148",
+      "scored_at": "2026-07-21T15:46:22.788851+00:00"
     }
   ]
 }
