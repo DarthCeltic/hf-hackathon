@@ -34,9 +34,9 @@ Results are from real ET-SoC1 silicon via the main-branch board workflow. Each m
 | smollm2_135m | ChiruGuru99 | `SmolLM2-135M-Instruct-Q8_0` | Decode tokens/s | 11.75 | 25.43 (+/- 5.40) | [6f16a3b](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29838563277) |
 | smollm2_360m | ChiruGuru99 | `SmolLM2-360M-Instruct-Q8_0` | Decode tokens/s | 10.19 | 18.31 (+/- 3.83) | [6f16a3b](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29838563277) |
 | smollm2_17b | ChiruGuru99 | `SmolLM2-1.7B-Instruct-Q8_0` | Decode tokens/s | 9.44 | 13.82 (+/- 3.01) | [6f16a3b](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29838563277) |
-| deepseek_r1_15b | ChiruGuru99 | `DeepSeek-R1-Distill-Qwen-1.5B-Q8_0` | Decode tokens/s | 8.07 | 47.36 (+/- 12.09) | [6f16a3b](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29838563277) |
+| deepseek_r1_15b | ChiruGuru99 | `DeepSeek-R1-Distill-Qwen-1.5B-Q8_0` | Decode tokens/s | 8.07 | 47.36 (+/- 12.09) | [702fa5f](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29839363351) |
 | smolvlm_256m | ChiruGuru99 | `SmolVLM-256M-Instruct-Q8_0` | Decode tokens/s | 11.73 | 31.21 (+/- 6.43) | [6f16a3b](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29838563277) |
-| smolvlm2_500m_video | ChiruGuru99 | `SmolVLM2-500M-Video-Instruct` | ET firmware cycles | 5859732863 | 22.28 (+/- 4.80) | [6f16a3b](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29838563277) |
+| smolvlm2_500m_video | ChiruGuru99 | `SmolVLM2-500M-Video-Instruct` | ET firmware cycles | 4859834894 | 22.28 (+/- 4.80) | [702fa5f](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29839363351) |
 
 Full JSON data lives in [`data/`](data/).
 <!-- leaderboard:end -->
