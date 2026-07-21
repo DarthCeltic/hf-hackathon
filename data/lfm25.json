@@ -2,7 +2,7 @@
   "model": "lfm25",
   "metric": "tokens_per_second",
   "lower_is_better": false,
-  "updated_at": "2026-07-21T16:58:50.077048+00:00",
+  "updated_at": "2026-07-21T17:44:37.219594+00:00",
   "entries": [
     {
       "team": "Afonso Oliveira",
@@ -152,20 +152,20 @@
       "variant": "LFM2.5-1.2B-Instruct-Q8_0",
       "kernel_wait_s": null,
       "kernel_wait_per_image_s": null,
-      "tokens_per_second": 3.0884966942184793,
-      "prompt_tokens_per_second": 32.43338008415147,
+      "tokens_per_second": 3.0932346409527893,
+      "prompt_tokens_per_second": 32.526872031373486,
       "prompt_tokens": 37,
       "completion_tokens": 34,
       "total_tokens": 71,
       "perplexity": 21.9012,
       "perplexity_error": 4.44245,
       "perplexity_tokens": 512,
-      "perplexity_prompt_tokens_per_second": 353.34,
+      "perplexity_prompt_tokens_per_second": 390.74,
       "validation_contract_sha256": null,
-      "sha": "052b186bf65aa737b091149725acca8ec8d9f5be",
+      "sha": "d4a0ba66e559636dfbad60a7ede9e7ae4e924cad",
       "ref": "refs/heads/main",
-      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29849617601",
-      "scored_at": "2026-07-21T16:52:47.342818+00:00"
+      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29853768103",
+      "scored_at": "2026-07-21T17:38:20.266706+00:00"
     },
     {
       "team": "karabambus",

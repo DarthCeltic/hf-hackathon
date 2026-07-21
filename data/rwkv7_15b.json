@@ -2,7 +2,7 @@
   "model": "rwkv7_15b",
   "metric": "tokens_per_second",
   "lower_is_better": false,
-  "updated_at": "2026-07-21T16:58:50.150744+00:00",
+  "updated_at": "2026-07-21T17:44:37.316159+00:00",
   "entries": [
     {
       "team": "RehanQasim-dev",
@@ -114,20 +114,20 @@
       "variant": "rwkv7-1.5B-world-q8_0",
       "kernel_wait_s": null,
       "kernel_wait_per_image_s": null,
-      "tokens_per_second": 1.6380004362199911,
-      "prompt_tokens_per_second": 10.00322456886102,
+      "tokens_per_second": 1.6439912044415577,
+      "prompt_tokens_per_second": 10.096660677961069,
       "prompt_tokens": 17,
       "completion_tokens": 96,
       "total_tokens": 113,
       "perplexity": 16.4656,
       "perplexity_error": 3.00866,
       "perplexity_tokens": 512,
-      "perplexity_prompt_tokens_per_second": 153.1,
+      "perplexity_prompt_tokens_per_second": 160.5,
       "validation_contract_sha256": "145e4c2829cf9a1b020afcff6a7775a5d072cc435a9e2a90903bd6b43b7f10e5",
-      "sha": "052b186bf65aa737b091149725acca8ec8d9f5be",
+      "sha": "d4a0ba66e559636dfbad60a7ede9e7ae4e924cad",
       "ref": "refs/heads/main",
-      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29849617601",
-      "scored_at": "2026-07-21T16:55:27.073579+00:00"
+      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29853768103",
+      "scored_at": "2026-07-21T17:41:24.475403+00:00"
     },
     {
       "team": "karabambus",
