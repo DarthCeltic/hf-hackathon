@@ -2,7 +2,7 @@
   "model": "qwen25_05b",
   "metric": "tokens_per_second",
   "lower_is_better": false,
-  "updated_at": "2026-07-21T14:27:24.025778+00:00",
+  "updated_at": "2026-07-21T15:25:05.708278+00:00",
   "entries": [
     {
       "team": "ChiruGuru99",
@@ -24,6 +24,27 @@
       "ref": "refs/heads/main",
       "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29838563277",
       "scored_at": "2026-07-21T14:24:45.789033+00:00"
+    },
+    {
+      "team": "DarthCeltic",
+      "participant_login": "DarthCeltic",
+      "variant": "Qwen2.5-0.5B-Instruct-Q8_0",
+      "kernel_wait_s": null,
+      "kernel_wait_per_image_s": null,
+      "tokens_per_second": 11.419452180330278,
+      "prompt_tokens_per_second": 75.03431716564488,
+      "prompt_tokens": 17,
+      "completion_tokens": 96,
+      "total_tokens": 113,
+      "perplexity": 16.9731,
+      "perplexity_error": 3.52984,
+      "perplexity_tokens": 512,
+      "perplexity_prompt_tokens_per_second": 133.24,
+      "validation_contract_sha256": null,
+      "sha": "eb889359d111905cb96de4cfaa36d49cd295829e",
+      "ref": "refs/heads/main",
+      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29840841497",
+      "scored_at": "2026-07-21T15:22:05.386525+00:00"
     },
     {
       "team": "CI",

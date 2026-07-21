@@ -2,7 +2,7 @@
   "model": "smollm2_360m",
   "metric": "tokens_per_second",
   "lower_is_better": false,
-  "updated_at": "2026-07-21T14:27:24.074467+00:00",
+  "updated_at": "2026-07-21T15:25:05.757306+00:00",
   "entries": [
     {
       "team": "ChiruGuru99",
@@ -24,6 +24,27 @@
       "ref": "refs/heads/main",
       "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29838563277",
       "scored_at": "2026-07-21T14:25:17.320248+00:00"
+    },
+    {
+      "team": "DarthCeltic",
+      "participant_login": "DarthCeltic",
+      "variant": "SmolLM2-360M-Instruct-Q8_0",
+      "kernel_wait_s": null,
+      "kernel_wait_per_image_s": null,
+      "tokens_per_second": 10.123445932415242,
+      "prompt_tokens_per_second": 69.03749548210507,
+      "prompt_tokens": 17,
+      "completion_tokens": 96,
+      "total_tokens": 113,
+      "perplexity": 18.3065,
+      "perplexity_error": 3.82726,
+      "perplexity_tokens": 512,
+      "perplexity_prompt_tokens_per_second": 129.94,
+      "validation_contract_sha256": null,
+      "sha": "eb889359d111905cb96de4cfaa36d49cd295829e",
+      "ref": "refs/heads/main",
+      "run_url": "https://github.com/aifoundry-org/hf-hackathon/actions/runs/29840841497",
+      "scored_at": "2026-07-21T15:22:40.206254+00:00"
     },
     {
       "team": "VenuAditya",
