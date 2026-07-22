@@ -37,6 +37,7 @@ Results are from real ET-SoC1 silicon via the main-branch board workflow. Each m
 | deepseek_r1_15b | RehanQasim-dev | `DeepSeek-R1-Distill-Qwen-1.5B-Q8_0` | Decode tokens/s | 8.71 | 47.36 (+/- 12.09) | [328802a](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29846814130) |
 | smolvlm_256m | noor-malaika | `SmolVLM-256M-Instruct-Q8_0` | Decode tokens/s | 12.47 | 31.21 (+/- 6.43) | [eb96bd5](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29845872886) |
 | smolvlm2_500m_video | RehanQasim-dev | `SmolVLM2-500M-Video-Instruct` | ET firmware cycles | 1270809440 | 22.28 (+/- 4.80) | [328802a](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29846814130) |
+| smolvlm_500m | Ashish-Soni08 | `SmolVLM-500M-Instruct` | ET firmware cycles | 616919265 | 25.37 (+/- 5.55) | [4ca6fbf](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29910365911) |
 
 Full JSON data lives in [`data/`](data/).
 <!-- leaderboard:end -->
