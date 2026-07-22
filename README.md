@@ -45,8 +45,9 @@ Full JSON data lives in [`data/`](data/).
 <!-- model-port-standings:start -->
 ## Most Models Ported by One Individual
 
-The trusted credit system is in shadow mode while contest dates and the
-historical identity inventory are reviewed. No award credits have been issued.
+| Rank | GitHub participant | Distinct ports | Credited models |
+|------|--------------------|----------------|-----------------|
+| 1 | [@Ashish-Soni08](https://github.com/Ashish-Soni08) | 1 | [smolvlm_500m](https://github.com/aifoundry-org/hf-hackathon/actions/runs/29910365911) |
 
 <!-- model-port-standings:end -->
 
