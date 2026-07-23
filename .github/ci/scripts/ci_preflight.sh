@@ -42,6 +42,8 @@ python3 -m unittest discover -s .github/ci/scripts -p 'test_merge_leaderboard.py
   || bad "leaderboard merge policy tests failed"
 python3 -m unittest discover -s .github/ci/scripts -p 'test_model_port_track.py' \
   || bad "trusted model-port track tests failed"
+python3 -m unittest discover -s .github/ci/scripts -p 'test_model_port_history.py' \
+  || bad "historical model-port review tests failed"
 python3 -m unittest discover -s .github/ci/scripts -p 'test_board_lock.py' \
   || bad "shared board lock tests failed"
 python3 -m py_compile ported_models/yolo/tools/host_reference.py \
@@ -361,6 +363,7 @@ paths += list(Path("ported_models").glob("*/artifacts.json"))
 paths += [
     Path("data/model-port-identities.json"),
     Path("data/model-port-credits.json"),
+    Path("data/model-port-historical-review.json"),
     Path("data/model-port-standings.json"),
 ]
 bad = False
@@ -422,12 +425,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, ".github/ci/scripts")
-from model_port_claim import active_credits, validate_policy, validate_registry
+from model_port_claim import validate_credit_inventory, validate_policy, validate_registry
+from model_port_history import validate_historical_review
 from render_model_port_standings import readme_section, standings
 
 policy = json.loads(Path(".github/ci/reference/model_ports_track.json").read_text())
 registry = json.loads(Path("data/model-port-identities.json").read_text())
 ledger = json.loads(Path("data/model-port-credits.json").read_text())
+review = json.loads(Path(policy["historical_review"]).read_text())
 rendered = json.loads(Path("data/model-port-standings.json").read_text())
 validate_policy(policy)
 identities = validate_registry(registry, policy)
@@ -439,8 +444,15 @@ baseline_roots = subprocess.check_output(
 assert sorted(registry["baseline_port_roots"]) == sorted(
     f"ported_models/{root}" for root in baseline_roots
 )
-credits = active_credits(ledger, policy)
-assert standings(policy, ledger) == rendered
+credits = validate_credit_inventory(ledger, policy, registry)
+validate_historical_review(
+    repo=Path(".").resolve(),
+    policy=policy,
+    registry=registry,
+    ledger=ledger,
+    review=review,
+)
+assert standings(policy, ledger, registry) == rendered
 assert readme_section(rendered, credits) in Path("README.md").read_text()
 assert "AFOliveira" in policy["excluded_logins"]
 for script in (
