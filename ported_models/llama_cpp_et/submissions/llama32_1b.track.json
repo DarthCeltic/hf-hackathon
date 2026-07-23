@@ -2,6 +2,6 @@
   "schema_version": 1,
   "track": "llama_3_2_1b_fastest",
   "model": "llama32_1b",
-  "runtime_revision": "ed89a5486e3d3035f8793e926098f470e8ce960f",
-  "submission_id": "darthceltic-maskhoist-q8-20260723"
+  "runtime_revision": "a89691c59f53101a45476d6818d2cff2c75c4f61",
+  "submission_id": "darthceltic-combo-c-batched-scaleconvert-20260723"
 }
