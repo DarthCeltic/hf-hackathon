@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "track": "llama_3_2_1b_fastest",
+  "model": "llama32_1b",
+  "runtime_revision": "60a1ba4439f5a0cdc2b4824229869f2bab19b39e",
+  "submission_id": "darthceltic-cacheline-scaleunpack-20260723"
+}
