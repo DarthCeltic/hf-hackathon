@@ -2,6 +2,6 @@
   "schema_version": 1,
   "track": "llama_3_2_1b_fastest",
   "model": "llama32_1b",
-  "runtime_revision": "1e273aa631170ff0f6557bc30f0957efae5f87f1",
-  "submission_id": "darthceltic-scaleunpack-169-20260723"
+  "runtime_revision": "30b0d6788cdcef6827851064e40534afbd347224",
+  "submission_id": "darthceltic-lightprefetch-20260723"
 }
