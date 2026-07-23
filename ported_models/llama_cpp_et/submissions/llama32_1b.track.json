@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "track": "llama_3_2_1b_fastest",
+  "model": "llama32_1b",
+  "runtime_revision": "ed89a5486e3d3035f8793e926098f470e8ce960f",
+  "submission_id": "darthceltic-maskhoist-q8-20260723"
+}
