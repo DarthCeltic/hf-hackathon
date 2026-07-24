@@ -2,6 +2,6 @@
   "schema_version": 1,
   "track": "llama_3_2_1b_fastest",
   "model": "llama32_1b",
-  "runtime_revision": "434c2aed87859d1ee7bfa3339f358bcafdb0b8b9",
-  "submission_id": "darthceltic-combo-d-ksplit-20260723"
+  "runtime_revision": "d9a3358001dd58eb96b3e53d3ad6b7d7c1599791",
+  "submission_id": "darthceltic-combo-f-full-ksplit-20260724"
 }
