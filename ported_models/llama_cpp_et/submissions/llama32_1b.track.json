@@ -2,6 +2,6 @@
   "schema_version": 1,
   "track": "llama_3_2_1b_fastest",
   "model": "llama32_1b",
-  "runtime_revision": "d9a3358001dd58eb96b3e53d3ad6b7d7c1599791",
-  "submission_id": "darthceltic-combo-f-full-ksplit-20260724"
+  "runtime_revision": "daf3f91723db2d6b76d068fc891fac277577a217",
+  "submission_id": "darthceltic-emergency-revert-combo-f-hang-20260724"
 }
