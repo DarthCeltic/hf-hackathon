@@ -2,6 +2,6 @@
   "schema_version": 1,
   "track": "llama_3_2_1b_fastest",
   "model": "llama32_1b",
-  "runtime_revision": "daf3f91723db2d6b76d068fc891fac277577a217",
-  "submission_id": "darthceltic-combo-a-best-real-result-20260723"
+  "runtime_revision": "63648e9df3b469efaa58854eff6a51d837692e14",
+  "submission_id": "darthceltic-combo-e-x2-plus-scaleconvert-20260724"
 }
